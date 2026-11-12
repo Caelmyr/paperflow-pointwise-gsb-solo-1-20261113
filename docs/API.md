@@ -62,6 +62,21 @@ POST /documents/{id}/export
 
 kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导出顺序）、dpi、image_format、quality、include_originals。结果返回导出id，`GET /exports/{id}/download` 下载；`GET /exports/{id}/verify` 校验。可搜索PDF拒绝缺失或过期OCR。
 
+## 对折小册子拼版
+
+拼版只读取页面快照，不修改源文档；每次请求都按当前选项从零重算，调整分册或翻面方式后旧方案的补白页和坐标不会残留。内容一律 contain 等比缩放居中，正文不会被裁切；OCR 文字层用同一几何矩阵随缩放和旋转写入。
+
+```json
+POST /documents/{id}/booklet/plan
+{"options":{"binding":"left","flip":"short","signature_mode":"none","paper":"a4",
+"orientation":"auto","cover":"none","padding":"end","margin_mm":8,"gap_mm":0,
+"fold_marks":true,"searchable":true}}
+```
+
+选项：binding 为 left（左装订）/right（右装订）；flip 为 short（短边翻面，横向纸推荐，背面正向）/long（长边翻面，背面整体180°）；signature_mode 为 none（整本一册）/split（按帖分册，配合 sheets_per_signature，每帖1–40张纸）；paper 为 a4/a3/letter/tabloid（横向）；orientation 为 auto（横向页自动旋转90°）/keep（保持原方向）；cover 为 none/blank（额外空白封面）；padding 为 end/both；margin_mm 0–40；gap_mm 0–30。返回纸张两面 panels（含 logical_number、side、slot、rotation、panel_rect、thumbnail_url）、reading_order（折好后的1..N阅读顺序）、signatures、warnings 与 checksum。
+
+`POST /documents/{id}/booklet/export` 入参与 plan 相同（可带 page_ids），服务端重新规划并生成 `booklet_pdf` 导出记录，返回 record 与本次 plan。`GET /booklet/{id}/verify` 校核 PDF 页数、每面图像数、面板不越界、文字层可检索，并用当前选项重算 checksum 比对；`GET /exports/{id}/verify` 的通用导出校验同样支持拼版 PDF。
+
 ## 文档编排
 
 - `POST /documents/{id}/reorder`：page_ids 必须完整且不重复。
@@ -136,6 +151,9 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 | POST | `/api/documents/<identifier>/import` |
 | POST | `/api/documents/<identifier>/reorder` |
 | POST | `/api/documents/<identifier>/split` |
+| GET | `/api/booklet/<identifier>/verify` |
+| POST | `/api/documents/<identifier>/booklet/export` |
+| POST | `/api/documents/<identifier>/booklet/plan` |
 | POST | `/api/documents/merge` |
 | GET | `/api/events` |
 | GET | `/api/exports` |

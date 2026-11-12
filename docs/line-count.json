@@ -7,7 +7,7 @@
     },
     {
       "file": "paperflow/advanced.py",
-      "effective_lines": 282
+      "effective_lines": 294
     },
     {
       "file": "paperflow/analysis.py",
@@ -24,6 +24,10 @@
     {
       "file": "paperflow/audit.py",
       "effective_lines": 234
+    },
+    {
+      "file": "paperflow/booklet.py",
+      "effective_lines": 355
     },
     {
       "file": "paperflow/catalog.py",
@@ -58,6 +62,10 @@
       "effective_lines": 277
     },
     {
+      "file": "paperflow/imposition.py",
+      "effective_lines": 146
+    },
+    {
       "file": "paperflow/interchange.py",
       "effective_lines": 209
     },
@@ -83,7 +91,7 @@
     },
     {
       "file": "paperflow/preflight.py",
-      "effective_lines": 206
+      "effective_lines": 220
     },
     {
       "file": "paperflow/reports.py",
@@ -110,6 +118,6 @@
       "effective_lines": 34
     }
   ],
-  "total": 5065,
+  "total": 5592,
   "passes_5000": true
 }

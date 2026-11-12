@@ -359,4 +359,20 @@ def register_advanced(app, store, documents, exporter):
     def document_export_history(document_id):
         return jsonify(preflight.export_history(document_id))
 
+    from .imposition import Imposition
+    imposition = Imposition(store)
+    app.extensions['imposition'] = imposition
+
+    @routes.post('/documents/<document_id>/booklet/plan')
+    def booklet_plan(document_id):
+        return jsonify(imposition.preview(document_id, body()))
+
+    @routes.post('/documents/<document_id>/booklet/export')
+    def booklet_export(document_id):
+        return jsonify(imposition.export(document_id, body())), 201
+
+    @routes.get('/booklet/<identifier>/verify')
+    def booklet_verify(identifier):
+        return jsonify(imposition.verify(identifier))
+
     app.register_blueprint(routes)

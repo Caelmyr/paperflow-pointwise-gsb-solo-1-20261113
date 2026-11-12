@@ -75,6 +75,8 @@ class Preflight:
             errors.append('导出文件大小与记录不一致')
         if record['kind'] in ('pdf', 'searchable_pdf'):
             details = self.pdf(path, record, state, errors, warnings)
+        elif record['kind'] == 'booklet_pdf':
+            details = self.booklet(path, record, state, errors, warnings)
         elif record['kind'] in ('zip', 'images'):
             details = self.archive(path, record, state, errors, warnings)
         elif record['kind'] == 'txt':
@@ -141,6 +143,19 @@ class Preflight:
             return {'page_count': len(document), 'pages': pages}
         finally:
             document.close()
+
+    def booklet(self, path, record, state, errors, warnings):
+        from .imposition import Imposition
+        result = Imposition(self.store).verify(record['id'])
+        errors.extend(result['errors'])
+        warnings.extend(result['warnings'])
+        return {
+            'page_count': result['sheet_count'] * 2,
+            'sheet_count': result['sheet_count'],
+            'signature_count': result['signature_count'],
+            'blank_page_count': result['blank_page_count'],
+            'checksum': result['checksum'],
+        }
 
     def archive(self, path, record, state, errors, warnings):
         details = {}

@@ -1,0 +1,115 @@
+{
+  "method": "Python tokenize 非空非注释物理行；AST 排除模块、类、函数文档字符串；仅后端自有源码，排除脚本、测试、前端、第三方、虚拟环境",
+  "files": [
+    {
+      "file": "paperflow/__init__.py",
+      "effective_lines": 1
+    },
+    {
+      "file": "paperflow/advanced.py",
+      "effective_lines": 282
+    },
+    {
+      "file": "paperflow/analysis.py",
+      "effective_lines": 256
+    },
+    {
+      "file": "paperflow/archive.py",
+      "effective_lines": 276
+    },
+    {
+      "file": "paperflow/assembly.py",
+      "effective_lines": 91
+    },
+    {
+      "file": "paperflow/audit.py",
+      "effective_lines": 234
+    },
+    {
+      "file": "paperflow/catalog.py",
+      "effective_lines": 185
+    },
+    {
+      "file": "paperflow/checkpoints.py",
+      "effective_lines": 108
+    },
+    {
+      "file": "paperflow/core.py",
+      "effective_lines": 231
+    },
+    {
+      "file": "paperflow/demo.py",
+      "effective_lines": 104
+    },
+    {
+      "file": "paperflow/documents.py",
+      "effective_lines": 402
+    },
+    {
+      "file": "paperflow/exports.py",
+      "effective_lines": 160
+    },
+    {
+      "file": "paperflow/filters.py",
+      "effective_lines": 183
+    },
+    {
+      "file": "paperflow/imaging.py",
+      "effective_lines": 277
+    },
+    {
+      "file": "paperflow/interchange.py",
+      "effective_lines": 209
+    },
+    {
+      "file": "paperflow/layout.py",
+      "effective_lines": 207
+    },
+    {
+      "file": "paperflow/ocr.py",
+      "effective_lines": 166
+    },
+    {
+      "file": "paperflow/parameters.py",
+      "effective_lines": 209
+    },
+    {
+      "file": "paperflow/pipelines.py",
+      "effective_lines": 212
+    },
+    {
+      "file": "paperflow/preferences.py",
+      "effective_lines": 99
+    },
+    {
+      "file": "paperflow/preflight.py",
+      "effective_lines": 206
+    },
+    {
+      "file": "paperflow/reports.py",
+      "effective_lines": 170
+    },
+    {
+      "file": "paperflow/review.py",
+      "effective_lines": 234
+    },
+    {
+      "file": "paperflow/sources.py",
+      "effective_lines": 121
+    },
+    {
+      "file": "paperflow/tasks.py",
+      "effective_lines": 146
+    },
+    {
+      "file": "paperflow/web.py",
+      "effective_lines": 262
+    },
+    {
+      "file": "run.py",
+      "effective_lines": 34
+    }
+  ],
+  "total": 5065,
+  "passes_5000": true
+}

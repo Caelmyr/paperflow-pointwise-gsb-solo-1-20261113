@@ -1,0 +1,1 @@
+demo_1.png与demo_2.png是合成体验资料，明确按150DPI定义输出大小；该元数据不是对未知用户照片的默认假设。pixels未改变。混合密度练习见practice/physical_size。

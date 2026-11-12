@@ -1,0 +1,10 @@
+.venv
+.tools
+__pycache__
+**/__pycache__
+.pytest_cache
+.git
+data
+*.zip
+*.log
+.paperflow.pid

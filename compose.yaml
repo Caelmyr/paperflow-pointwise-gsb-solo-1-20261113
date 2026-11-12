@@ -1,0 +1,12 @@
+services:
+  paperflow:
+    build: .
+    ports:
+      - "127.0.0.1:${PAPERFLOW_PORT:-8888}:8888"
+    volumes:
+      - "${PAPERFLOW_DATA_DIR:-./data}:/app/data"
+    restart: unless-stopped
+    init: true
+    environment:
+      PAPERFLOW_UID: "${PAPERFLOW_UID:-1000}"
+      PAPERFLOW_GID: "${PAPERFLOW_GID:-1000}"

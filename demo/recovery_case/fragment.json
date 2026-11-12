@@ -1,0 +1,151 @@
+{
+  "origin": "captured durable state from actual interrupted PaperFlow service",
+  "collection": {
+    "id": "collection_b3d6a813bc194198850fe4eeb19ebcd0",
+    "name": "我的数字档案",
+    "category": "工作资料",
+    "created_at": "2026-11-12T09:34:43.721+00:00",
+    "updated_at": "2026-11-12T09:34:43.721+00:00"
+  },
+  "document": {
+    "id": "document_aba67eec65af40238fe774c75d38548b",
+    "collection_id": "collection_b3d6a813bc194198850fe4eeb19ebcd0",
+    "name": "真实提交断点练习",
+    "category": "未分类",
+    "page_ids": [
+      "page_22e4200d05484a3887b35b68fffe3e1c",
+      "page_47029704b4aa4d07a36f860f8396e0d5"
+    ],
+    "created_at": "2026-11-12T09:47:31.721+00:00",
+    "updated_at": "2026-11-12T09:47:34.438+00:00"
+  },
+  "pages": {
+    "page_22e4200d05484a3887b35b68fffe3e1c": {
+      "id": "page_22e4200d05484a3887b35b68fffe3e1c",
+      "document_id": "document_aba67eec65af40238fe774c75d38548b",
+      "name": "demo_document · 1",
+      "original": "originals/580c1fe90f0d425982125bc0b3c96afb.png",
+      "current": "processed/65926786c7cf4b1eb1183a5f833814b5.png",
+      "thumbnail": "thumbs/2b39cdec02f642fca9f845be7ebb8b36.jpg",
+      "source": {
+        "name": "demo_document.pdf",
+        "type": "pdf",
+        "page": 1,
+        "retained": true
+      },
+      "sha256": "b6c2882a0ec4eaa17205ecaa535a514e98c9ced5d6631ec0eabbc67d96615fc7",
+      "width": 1824,
+      "height": 1344,
+      "revision": 1,
+      "created_at": "2026-11-12T09:47:32.678+00:00",
+      "updated_at": "2026-11-12T09:47:38.602+00:00",
+      "ocr": null,
+      "ocr_versions": [],
+      "history": [
+        {
+          "id": "history_8cf85ee7cce14c0fb27fd8c39f134443",
+          "time": "2026-11-12T09:47:38.569+00:00",
+          "operation": "rotate",
+          "params": {
+            "angle": 90.0
+          },
+          "metadata": {},
+          "before": "originals/580c1fe90f0d425982125bc0b3c96afb.png",
+          "after": "processed/65926786c7cf4b1eb1183a5f833814b5.png",
+          "before_width": 1344,
+          "before_height": 1824
+        }
+      ],
+      "regions": [],
+      "quality": {
+        "width": 1824,
+        "height": 1344,
+        "brightness": 249.55,
+        "contrast": 26.29,
+        "sharpness": 530.39,
+        "entropy": 0.542,
+        "dark_ratio": 0.0118,
+        "light_ratio": 0.966
+      },
+      "source_file_id": "source_9bb355dc67a945439710b0b4d448119a"
+    },
+    "page_47029704b4aa4d07a36f860f8396e0d5": {
+      "id": "page_47029704b4aa4d07a36f860f8396e0d5",
+      "document_id": "document_aba67eec65af40238fe774c75d38548b",
+      "name": "demo_document · 2",
+      "original": "originals/e1bfed364776472cadddc9545dbe9166.png",
+      "current": "originals/e1bfed364776472cadddc9545dbe9166.png",
+      "thumbnail": "thumbs/8fda30f951174b84a69d6ac1e1aa9bee.jpg",
+      "source": {
+        "name": "demo_document.pdf",
+        "type": "pdf",
+        "page": 2,
+        "retained": true
+      },
+      "sha256": "b4532865fd081844ba3c7761159eb6f775adc722e5a8dd3be55014df739f30f2",
+      "width": 1344,
+      "height": 1824,
+      "revision": 0,
+      "created_at": "2026-11-12T09:47:34.216+00:00",
+      "updated_at": "2026-11-12T09:47:34.216+00:00",
+      "ocr": null,
+      "ocr_versions": [],
+      "history": [],
+      "regions": [],
+      "quality": {
+        "width": 1344,
+        "height": 1824,
+        "brightness": 249.82,
+        "contrast": 25.44,
+        "sharpness": 518.66,
+        "entropy": 0.518,
+        "dark_ratio": 0.0108,
+        "light_ratio": 0.968
+      },
+      "source_file_id": "source_9bb355dc67a945439710b0b4d448119a"
+    }
+  },
+  "sources": {
+    "source_9bb355dc67a945439710b0b4d448119a": {
+      "id": "source_9bb355dc67a945439710b0b4d448119a",
+      "name": "demo_document.pdf",
+      "path": "sources/7dc7ef6e213548119e46561020770842.pdf",
+      "sha256": "dc298fcd37cb814cbe58de037bce5f5b8945450a7b2efecbce81734cd6d511bf",
+      "bytes": 15961277,
+      "extension": ".pdf",
+      "created_at": "2026-11-12T09:36:28.388+00:00"
+    }
+  },
+  "task": {
+    "id": "task_942c31bbfbe94ad88cd86f59faf5dd8d",
+    "operation": "rotate",
+    "params": {
+      "angle": 90.0
+    },
+    "page_ids": [
+      "page_22e4200d05484a3887b35b68fffe3e1c",
+      "page_47029704b4aa4d07a36f860f8396e0d5"
+    ],
+    "status": "running",
+    "created_at": "2026-11-12T09:47:36.068+00:00",
+    "started_at": "2026-11-12T09:47:36.999+00:00",
+    "finished_at": null,
+    "total": 2,
+    "done": 0,
+    "succeeded": 0,
+    "failed": 0,
+    "progress": 0,
+    "current_page": "page_22e4200d05484a3887b35b68fffe3e1c",
+    "cancel_requested": false,
+    "results": [],
+    "error": null
+  },
+  "files": {
+    "originals/580c1fe90f0d425982125bc0b3c96afb.png": "b6c2882a0ec4eaa17205ecaa535a514e98c9ced5d6631ec0eabbc67d96615fc7",
+    "originals/e1bfed364776472cadddc9545dbe9166.png": "b4532865fd081844ba3c7761159eb6f775adc722e5a8dd3be55014df739f30f2",
+    "processed/65926786c7cf4b1eb1183a5f833814b5.png": "3e01ba29191a2413dd6c47c06a16e40eb7e6591287eaa53ca8226e9fb13265cb",
+    "sources/7dc7ef6e213548119e46561020770842.pdf": "dc298fcd37cb814cbe58de037bce5f5b8945450a7b2efecbce81734cd6d511bf",
+    "thumbs/2b39cdec02f642fca9f845be7ebb8b36.jpg": "f8e4d57555b47b56d41c81436c67120a9eab98a62294dfe43961f3714a334eb0",
+    "thumbs/8fda30f951174b84a69d6ac1e1aa9bee.jpg": "8e242c0a80c5aac8f6532755d2536f9a12126e713a0bd6b727fd344d2edfca2f"
+  }
+}

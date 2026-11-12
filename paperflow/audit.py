@@ -30,6 +30,10 @@ class Auditor:
             references[record['path']].append({'kind': 'backup', 'id': record['id']})
         for source in state.get('sources', {}).values():
             references[source['path']].append({'kind': 'source', 'id': source['id']})
+        for session in state.get('pairing_sessions', {}).values():
+            for page in session.get('pages', []):
+                if page.get('descriptor_path'):
+                    references[page['descriptor_path']].append({'kind': 'paircache', 'id': session['id'], 'page_id': page['id']})
         for checkpoint in state.get('checkpoints', {}).values():
             for page in checkpoint['pages'].values():
                 for field in ('original', 'current', 'thumbnail'):
@@ -112,7 +116,7 @@ class Auditor:
         categories = {}
         total_bytes = 0
         total_files = 0
-        for category in ('sources', 'originals', 'processed', 'thumbs', 'regions', 'exports', 'incoming'):
+        for category in ('sources', 'originals', 'processed', 'thumbs', 'regions', 'exports', 'incoming', 'paircache'):
             directory = self.store.root / category
             files = 0
             size = 0

@@ -8,7 +8,7 @@ function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':
 function toast(message,error=false){$('toast').textContent=message;$('toast').className=error?'error':'';$('toast').style.display='block';clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').style.display='none',error?9000:4200);}
 async function api(url,method='GET',data){const options={method,headers:{'X-PaperFlow':'1'}};if(data instanceof FormData){options.body=data;}else if(data!==undefined){options.headers['Content-Type']='application/json';options.body=JSON.stringify(data);}const response=await fetch('/api'+url,options);const result=await response.json();if(!response.ok)throw Error(result.error||'请求失败');return result;}
 async function busy(label,action){if(isBusy)return;isBusy=true;$('busyText').textContent=label;$('busy').classList.remove('hidden');try{return await action();}catch(error){toast(error.message,true);}finally{isBusy=false;$('busy').classList.add('hidden');}}
-function modal(title,html){$('modalTitle').textContent=title;$('modalContent').innerHTML=html;if(!$('modal').open)$('modal').showModal();}
+function modal(title,html){$('modalTitle').textContent=title;$('modalContent').innerHTML=html;$('modal').classList.remove('pair-modal');if(!$('modal').open)$('modal').showModal();}
 function form(title,fields,onSubmit){modal(title,`<form class="modal-form" id="dialogForm">${fields}<button type="submit" class="primary">确认</button></form>`);$('dialogForm').onsubmit=async event=>{event.preventDefault();const data=new FormData(event.currentTarget);await busy('正在保存…',async()=>{await onSubmit(Object.fromEntries(data));$('modal').close();});};}
 function collectionOptions(selected){return state.workspace.collections.map(c=>`<option value="${c.id}" ${c.id===selected?'selected':''}>${escapeHtml(c.name)}</option>`).join('');}
 function documentOptions(exclude){return state.workspace.documents.filter(d=>d.id!==exclude).map(d=>`<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');}
@@ -112,3 +112,291 @@ $('reviewMenu').onclick=()=>busy('正在读取复核记录…',async()=>{
 $('loadRecovery').onclick=()=>busy('正在载入恢复练习…',async()=>{const doc=await api('/demo/recovery','POST',{});await refresh();await openDocument(doc.id);toast('真实中断资料已载入，请在任务面板核对后重试');});
 
 async function showStorage(){const info=await api('/audit/storage');modal('存储与清理',`<p class="help-text">当前文件 ${(info.total_bytes/1048576).toFixed(2)} MB。仅清理超过保留期且未被记录引用的文件；原始文件不在清理范围。</p><label>保留小时数<input id="storageAge" type="number" min="1" max="87600" value="24"></label><button id="previewCleanup">预览可清理文件</button><div id="cleanupList"></div><button id="confirmCleanup" disabled>清理选中文件</button><p id="cleanupResult" class="help-text"></p>`);let age=24;let files=[];$('previewCleanup').onclick=()=>busy('正在核对存储引用…',async()=>{age=Number($('storageAge').value);files=await api('/audit/orphans','POST',{minimum_age_hours:age});$('cleanupList').innerHTML=files.length?files.map((f,i)=>`<label><input type="checkbox" data-cleanup-index="${i}" checked>${escapeHtml(f.path)} · ${Math.ceil(f.bytes/1024)} KB</label>`).join(''):'<p>当前没有可清理文件。</p>';$('confirmCleanup').disabled=!files.length;$('cleanupResult').textContent='请确认文件清单；真实删除不可撤销。';});$('confirmCleanup').onclick=()=>busy('正在清理选中文件…',async()=>{const paths=[...document.querySelectorAll('[data-cleanup-index]:checked')].map(e=>files[Number(e.dataset.cleanupIndex)].path);const result=await api('/audit/cleanup','POST',{minimum_age_hours:age,paths});$('cleanupResult').textContent=`已清理 ${result.deleted.length} 个文件，释放 ${(result.bytes_freed/1048576).toFixed(2)} MB。`;$('confirmCleanup').disabled=true;});}
+
+/* ===================== 双面扫描配对工作台 ===================== */
+const pairingState = {session:null, selectedPage:null};
+const confidenceText = {high:'高置信', middle:'待核对', low:'低置信', none:'无把握'};
+const turnText = {0:'不旋转', 1:'顺时针90°', 2:'旋转180°（倒置进纸）', 3:'逆时针90°'};
+const roleText = {front:'正面批次', back:'背面批次', supplement:'补拍/其他'};
+
+function pageThumb(page){return `/api/pages/${page.id}/image?variant=thumbnail`;}
+function pageTitle(page){return `${String(page.index+1).padStart(2,'0')} · ${escapeHtml(page.name)}${page.blank?' · 疑似空白':''}`;}
+
+async function openPairing(documentId, sessionId){
+  await busy('正在建立配对分析…', async()=>{
+    let session;
+    if(sessionId){session = await api('/pairing/'+sessionId);}
+    else{session = await api('/documents/'+documentId+'/pairing','POST',{name:(state.document?.name||'双面资料')+' · 配对工作台'});}
+    pairingState.session = session;
+    renderPairing();
+  });
+}
+
+function pairingRefresh(){return api('/pairing/'+pairingState.session.id).then(s=>{pairingState.session=s;renderPairing();});}
+
+function renderPairing(){
+  const s = pairingState.session; if(!s) return;
+  const a = s.analysis || {suggestions:[],duplicate_groups:[],blank_pages:[],unpaired_pages:[],warnings:[],orientation:{}};
+  const warnings = a.warnings.map(w=>`<li class="pair-warning ${w.code.includes('blank')?'warn-blank':''}">${escapeHtml(w.message)}</li>`).join('');
+  modal('双面配对工作台 · '+escapeHtml(s.name), `
+  <div class="pair-layout">
+    <div class="pair-topbar">
+      <span class="pair-status">状态：${s.status==='open'?'调整中':'已生成文档'} · 已确认 ${s.pairs.length} 对 · 忽略 ${s.ignored.length} 页 · 共 ${s.pages.length} 页</span>
+      <div class="row">
+        <button id="pairReopen" title="复制为新会话，已确认配对保留">⎘ 复制会话继续调整</button>
+        <button id="pairDelete" class="danger-text">删除会话</button>
+      </div>
+    </div>
+    ${warnings?`<ul class="pair-warnings">${warnings}</ul>`:''}
+    <div class="pair-cols">
+      <section class="pair-col">
+        <h3>有把握的正反配对建议（确认后作为锚点重新对齐）</h3>
+        <div id="pairSuggestions">${renderSuggestions(s,a)}</div>
+        <h3>已确认配对 <span class="pair-count">${s.pairs.length}</span></h3>
+        <div id="pairConfirmed">${renderConfirmed(s)}</div>
+      </section>
+      <section class="pair-col">
+        <h3>重复扫描（不会自动删除，请选择保留或忽略）</h3>
+        <div id="pairDuplicates">${renderDuplicates(s,a)}</div>
+        <h3>疑似空白页（不会自动丢弃）</h3>
+        <div id="pairBlanks">${renderBlanks(s,a)}</div>
+        <h3>未确定 / 未配对页 <span class="pair-count">${a.unpaired_pages.length}</span></h3>
+        <div id="pairUnpaired">${renderUnpaired(s,a)}</div>
+      </section>
+    </div>
+    <div class="pair-batches">
+      <h3>扫描批次与角色（${s.batches.length} 个来源）</h3>
+      ${s.batches.map(b=>renderBatchRow(s,b)).join('')}
+    </div>
+    <div class="pair-footer">
+      <div id="pairReadiness" class="pair-readiness"></div>
+      <div class="row">
+        <button id="pairFinalize" class="primary">确认无误，生成阅读顺序正确的新文档</button>
+      </div>
+    </div>
+  </div>`);
+  $('modal').classList.add('pair-modal');
+  bindPairingEvents(s);
+  renderReadiness(s);
+}
+
+function renderSuggestions(s,a){
+  if(!a.suggestions.length) return '<p class="hint">当前没有可自动给出的建议，请在右侧未配对页中人工指定。</p>';
+  return a.suggestions.map((sug,i)=>`
+  <div class="pair-card ${sug.confidence}" data-suggestion="${i}">
+    <div class="pair-thumbs">
+      <figure><img src="${pageThumb(sug.front)}" alt="正面"><figcaption>正 ${pageTitle(sug.front)}</figcaption></figure>
+      <span class="pair-link">⇄ 建议旋转：<b>${turnText[sug.turn]||sug.turn}</b></span>
+      <figure><img src="${pageThumb(sug.back)}" alt="背面"><figcaption>背 ${pageTitle(sug.back)}</figcaption></figure>
+    </div>
+    <div class="pair-meta">
+      <span class="conf conf-${sug.confidence}">${confidenceText[sug.confidence]}</span>
+      <span>综合分 ${(sug.score*100).toFixed(0)} · 图像分 ${(sug.image_score*100).toFixed(0)} · ${sug.method==='anchor'?'锚点对齐':'顺序对齐'}</span>
+    </div>
+    <div class="pair-actions">
+      <label class="pair-turn">背面朝向
+        <select data-turn="${i}">${[0,1,2,3].map(t=>`<option value="${t}" ${t===sug.turn?'selected':''}>${turnText[t]}</option>`).join('')}</select>
+      </label>
+      <button data-confirm-suggestion="${i}" class="primary">确认此配对${i===0&&!s.pairs.length?'（设为锚点）':''}</button>
+      <button data-candidates="${sug.front.id}">查看其他候选</button>
+    </div>
+  </div>`).join('');
+}
+
+function renderConfirmed(s){
+  if(!s.pairs.length) return '<p class="hint">还没有确认配对。先确认几个有把握的，系统会重新对齐剩余建议。</p>';
+  return s.pairs.map(p=>`
+  <div class="pair-card confirmed">
+    <div class="pair-thumbs">
+      <figure><img src="${pageThumb(p.front)}"><figcaption>正 ${pageTitle(p.front)}</figcaption></figure>
+      <span class="pair-link">${p.anchor?'⚓ 锚点 · ':''}${turnText[p.turn]}</span>
+      <figure><img src="${pageThumb(p.back)}"><figcaption>背 ${pageTitle(p.back)}</figcaption></figure>
+    </div>
+    <div class="pair-actions">
+      <select data-pair-turn="${p.id}">${[0,1,2,3].map(t=>`<option value="${t}" ${t===p.turn?'selected':''}>${turnText[t]}</option>`).join('')}</select>
+      <button data-unconfirm="${p.id}" class="danger-text">撤销配对</button>
+    </div>
+  </div>`).join('');
+}
+
+function renderDuplicates(s,a){
+  const ignored = new Set(s.ignored.map(x=>x.page_id));
+  if(!a.duplicate_groups.length) return '<p class="hint">未发现重复扫描。</p>';
+  return a.duplicate_groups.map(g=>`
+  <div class="dup-group">
+    <p class="hint">${g.pages.length} 个页面内容高度相似，疑似重扫：</p>
+    <div class="dup-pages">${g.pages.map(p=>`
+      <figure class="dup-page ${ignored.has(p.id)?'is-ignored':''}">
+        <img src="${pageThumb(p)}"><figcaption>${pageTitle(p)}</figcaption>
+        ${ignored.has(p.id)?'<span class="ignored-flag">已忽略</span>':''}
+        <div class="dup-buttons">
+          <button data-ignore="${p.id}" data-blank="${p.blank?'1':'0'}">忽略此重复</button>
+          ${ignored.has(p.id)?`<button data-keep="${p.id}">保留</button>`:''}
+        </div>
+      </figure>`).join('')}
+    </div>
+  </div>`).join('');
+}
+
+function renderBlanks(s,a){
+  const ignored = new Set(s.ignored.map(x=>x.page_id));
+  if(!a.blank_pages.length) return '<p class="hint">未发现疑似空白页。</p>';
+  return a.blank_pages.map(p=>`
+  <div class="blank-row ${ignored.has(p.id)?'is-ignored':''}">
+    <img src="${pageThumb(p)}" class="blank-thumb">
+    <div><b>${pageTitle(p)}</b><p class="hint">空白指数 ${p.blank_score}。系统不会为凑齐页数自动删除它。</p></div>
+    <div class="dup-buttons">
+      ${ignored.has(p.id)
+        ? `<button data-keep="${p.id}">取消忽略（保留）</button>`
+        : `<button data-ignore="${p.id}" data-blank="1">核对后忽略（需确认）</button>`}
+    </div>
+  </div>`).join('');
+}
+
+function renderUnpaired(s,a){
+  if(!a.unpaired_pages.length) return '<p class="hint">所有页面都已有去向（已配对或已忽略）。</p>';
+  return a.unpaired_pages.map(p=>`
+  <div class="unpaired-row">
+    <img src="${pageThumb(p)}" class="blank-thumb">
+    <div><b>${pageTitle(p)}</b><p class="hint">来源：${escapeHtml(p.source_name||'未知')}${p.has_suggestion?' · 存在自动建议':''}</p></div>
+    <div class="dup-buttons">
+      <button data-candidates="${p.id}">为它找配对</button>
+      <button data-ignore="${p.id}" data-blank="${p.blank?'1':'0'}">忽略</button>
+    </div>
+  </div>`).join('');
+}
+
+function renderBatchRow(s,b){
+  const role = s.role_map[b.key];
+  return `<div class="batch-row">
+    <span class="batch-label">${escapeHtml(b.label)} <small>(${b.count} 页)</small></span>
+    <select data-batch-role="${b.key}">
+      ${Object.entries(roleText).map(([v,t])=>`<option value="${v}" ${role===v?'selected':''}>${t}</option>`).join('')}
+    </select>
+  </div>`;
+}
+
+function renderReadiness(s){
+  const el = $('pairReadiness'); if(!el) return;
+  const r = s.readiness;
+  if(r.ready){el.className='pair-readiness ready';el.innerHTML=`✓ 已处理 ${r.accounted_pages}/${r.total_pages} 页（确认 ${r.confirmed_pairs} 对，忽略 ${r.ignored_pages} 页${r.ignored_blank_pages?`，含人工确认空白 ${r.ignored_blank_pages} 页`:''}），可以生成新文档。原扫描文档与各页校订将完整保留。`;}
+  else{el.className='pair-readiness blocked';el.innerHTML='⛔ '+r.issues.map(i=>escapeHtml(i.message)).join('<br>');}
+  const btn=$('pairFinalize'); if(btn) btn.disabled=!r.ready;
+}
+
+function bindPairingEvents(s){
+  document.querySelectorAll('[data-confirm-suggestion]').forEach(btn=>{
+    btn.onclick=()=>busy('正在确认配对并重新对齐…',async()=>{
+      const i=Number(btn.dataset.confirmSuggestion);
+      const sug=s.analysis.suggestions[i];
+      const turn=Number(document.querySelector(`[data-turn="${i}"]`).value);
+      const preview=await api('/pairing/'+s.id+'/confirm-preview','POST',{front_id:sug.front_id,back_id:sug.back_id,turn});
+      const impact=[];
+      if(preview.suggestions_changed.length)impact.push(`调整 ${preview.suggestions_changed.length} 条建议`);
+      if(preview.suggestions_added.length)impact.push(`新增 ${preview.suggestions_added.length} 条建议`);
+      if(preview.replaces_existing)impact.push('将替换一条已确认配对');
+      await api('/pairing/'+s.id+'/confirm','POST',{front_id:sug.front_id,back_id:sug.back_id,turn,anchor:true});
+      toast('配对已确认'+(impact.length?'，影响：'+impact.join('，'):''));
+      await pairingRefresh();
+    });
+  });
+  document.querySelectorAll('[data-turn]').forEach(sel=>{sel.onchange=()=>{};});
+  document.querySelectorAll('[data-pair-turn]').forEach(sel=>{
+    sel.onchange=()=>busy('正在保存朝向…',async()=>{await api('/pairing/'+s.id+'/turn','POST',{pair_id:sel.dataset.pairTurn,turn:Number(sel.value)});await pairingRefresh();});
+  });
+  document.querySelectorAll('[data-unconfirm]').forEach(btn=>{
+    btn.onclick=()=>busy('正在撤销并分析影响…',async()=>{
+      const result=await api('/pairing/'+s.id+'/unconfirm','POST',{pair_id:btn.dataset.unconfirm});
+      const im=result.impact;
+      toast(`已撤销：改动 ${im.changed.length} 条、释放 ${im.added.length} 条建议`);
+      await pairingRefresh();
+    });
+  });
+  document.querySelectorAll('[data-batch-role]').forEach(sel=>{
+    sel.onchange=()=>busy('正在调整批次角色…',async()=>{
+      const key=sel.dataset.batchRole; const value=sel.value;
+      const roles={[key]:value};
+      if(value==='front'){const cur=s.batches.find(b=>s.role_map[b.key]==='front');if(cur&&cur.key!==key)roles[cur.key]='supplement';}
+      if(value==='back'){const cur=s.batches.find(b=>s.role_map[b.key]==='back');if(cur&&cur.key!==key)roles[cur.key]='supplement';}
+      await api('/pairing/'+s.id+'/roles','POST',{roles});toast('批次角色已更新，建议已重新计算');await pairingRefresh();
+    });
+  });
+  document.querySelectorAll('[data-ignore]').forEach(btn=>{
+    btn.onclick=()=>ignorePage(s,btn.dataset.ignore,btn.dataset.blank==='1');
+  });
+  document.querySelectorAll('[data-keep]').forEach(btn=>{
+    btn.onclick=()=>busy('正在恢复保留…',async()=>{await api('/pairing/'+s.id+'/keep','POST',{page_id:btn.dataset.keep});toast('页面已保留，重新纳入分析');await pairingRefresh();});
+  });
+  document.querySelectorAll('[data-candidates]').forEach(btn=>{
+    btn.onclick=()=>showCandidates(s,btn.dataset.candidates);
+  });
+  $('pairReopen').onclick=()=>form('复制会话继续调整','<label>新会话名称</label><input name="name" value="'+escapeHtml(s.name)+' · 继续" required>',async v=>{
+    const child=await api('/pairing/'+s.id+'/reopen','POST',v);
+    $('modal').close();toast('已复制为新会话，已确认配对完整保留');await openPairing(s.document_id,child.id);
+  });
+  $('pairDelete').onclick=()=>{modal('删除配对会话','<p class="help-text">只删除配对工作记录，不会删除任何扫描页、原图或已生成的文档。</p><button id="confirmPairDelete" class="danger-text full">确认删除会话</button>');
+    $('confirmPairDelete').onclick=()=>busy('正在删除会话…',async()=>{await api('/pairing/'+s.id,'DELETE');$('modal').close();pairingState.session=null;toast('配对会话已删除，原始资料不受影响');});};
+  $('pairFinalize').onclick=()=>finalizePairing(s);
+}
+
+async function ignorePage(s,pageId,isBlank){
+  const ack=isBlank?await new Promise(resolve=>{
+    modal('确认忽略疑似空白页',`<p class="help-text">该页疑似空白。系统<b>不会自动删除</b>任何页面；忽略仅表示它不进入最终阅读文档，原图与记录始终保留。</p>
+      <label class="modal-form"><input type="checkbox" id="blankAck"> 我已核对，确认此空白页可忽略</label>
+      <button id="blankAckBtn" class="primary full" disabled>确认忽略</button>`);
+    $('blankAck').onchange=e=>{$('blankAckBtn').disabled=!e.target.checked;};
+    $('blankAckBtn').onclick=()=>{$('modal').close();resolve(true);};
+  }):true;
+  if(!ack)return;
+  await busy('正在处理…',async()=>{
+    await api('/pairing/'+s.id+'/ignore','POST',{page_id:pageId,reason:isBlank?'人工核对确认空白':'人工忽略',acknowledge_blank:isBlank});
+    toast(isBlank?'空白页已显式确认忽略':'页面已忽略');await pairingRefresh();
+  });
+}
+
+async function showCandidates(s,pageId){
+  const page=s.pages.find(p=>p.id===pageId);
+  const candidates=await api('/pairing/'+s.id+'/candidates/'+pageId);
+  modal('为页面选择配对 · '+pageTitle(page),`
+    <p class="hint">按图像相似度列出候选（含补拍页）。被占用的候选会先替换原配对，影响会在确认时提示。</p>
+    <div class="candidate-list">
+      ${candidates.map(c=>`
+      <div class="candidate-row ${c.occupied?'occupied':''}">
+        <img src="${pageThumb(c)}" class="blank-thumb">
+        <div><b>${pageTitle(c)}</b><p class="hint">${confidenceText[c.confidence]} · 综合分 ${(c.score*100).toFixed(0)} · 建议 ${turnText[c.turn]}${c.occupied?' · 该页已在配对中':''}</p></div>
+        <button data-pick='${JSON.stringify({front:pageId,back:c.id,turn:c.turn})}'>配对此页</button>
+      </div>`).join('')}
+    </div>`);
+  document.querySelectorAll('[data-pick]').forEach(btn=>{
+    btn.onclick=()=>busy('正在确认人工配对…',async()=>{
+      const pick=JSON.parse(btn.dataset.pick);
+      const preview=await api('/pairing/'+s.id+'/confirm-preview','POST',{front_id:pick.front,back_id:pick.back,turn:pick.turn});
+      const notes=[`调整 ${preview.suggestions_changed.length} 条建议`];
+      if(preview.replaces_existing)notes.push('将拆离原有配对，相关页回到未配对清单');
+      await api('/pairing/'+s.id+'/confirm','POST',{...pick,anchor:true});
+      $('modal').close();toast('人工配对已确认，影响：'+notes.join('，'));await pairingRefresh();
+    });
+  });
+}
+
+async function finalizePairing(s){
+  const r=s.readiness;
+  if(!r.ready){toast('还有页面未处理，请先完成清单中的事项',true);return;}
+  form('生成阅读顺序正确的新文档',`
+    <p class="help-text">将按确认配对生成 <b>${r.confirmed_pairs*2}</b> 页的新文档（正面、背面交错，倒置背面自动转正）。原扫描批次、原图与各页人工校订<b>独立保留</b>，本会话也会留存，可随时返回继续调整。</p>
+    <label>新文档名称</label><input name="name" value="${escapeHtml(s.name)} · 阅读顺序" required>`,
+  async v=>{
+    const result=await api('/pairing/'+s.id+'/finalize','POST',v);
+    $('modal').close();toast('已生成新文档：'+result.document.name+'，原始文档未改动');
+    await refresh();await openDocument(result.document.id);
+  });
+}
+
+$('pairingButton').onclick=()=>{if(!state.document)return toast('请先选择一个文档',true);openPairing(state.document.id).catch(e=>toast(e.message,true));};
+$('loadDuplex').onclick=()=>busy('正在生成双面扫描练习资料…',async()=>{
+  const collectionId=state.workspace.collections[0]?.id;
+  const doc=await api('/demo/duplex','POST',collectionId?{collection_id:collectionId}:{});
+  await refresh();await openDocument(doc.id);
+  toast('练习资料已载入：含背面倒置、缺扫、重扫、空白页与补拍页');
+  openPairing(doc.id).catch(e=>toast(e.message,true));
+});

@@ -15,7 +15,7 @@
     },
     {
       "file": "paperflow/archive.py",
-      "effective_lines": 276
+      "effective_lines": 280
     },
     {
       "file": "paperflow/assembly.py",
@@ -23,7 +23,7 @@
     },
     {
       "file": "paperflow/audit.py",
-      "effective_lines": 234
+      "effective_lines": 238
     },
     {
       "file": "paperflow/catalog.py",
@@ -39,11 +39,15 @@
     },
     {
       "file": "paperflow/demo.py",
-      "effective_lines": 104
+      "effective_lines": 204
     },
     {
       "file": "paperflow/documents.py",
       "effective_lines": 402
+    },
+    {
+      "file": "paperflow/duplex.py",
+      "effective_lines": 761
     },
     {
       "file": "paperflow/exports.py",
@@ -94,6 +98,10 @@
       "effective_lines": 234
     },
     {
+      "file": "paperflow/signature.py",
+      "effective_lines": 188
+    },
+    {
       "file": "paperflow/sources.py",
       "effective_lines": 121
     },
@@ -103,13 +111,13 @@
     },
     {
       "file": "paperflow/web.py",
-      "effective_lines": 262
+      "effective_lines": 326
     },
     {
       "file": "run.py",
       "effective_lines": 34
     }
   ],
-  "total": 5065,
+  "total": 6186,
   "passes_5000": true
 }

@@ -245,3 +245,6 @@ connection_strings.csv
 !.env.sample
 !.env.template
 __pycache__/
+
+# 双面配对练习运行时生成的素材
+demo/duplex_case/

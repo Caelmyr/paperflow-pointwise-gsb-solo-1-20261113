@@ -74,6 +74,28 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 - `POST /pages/{id}/split-spread`：axis、ratio、overlap，拆开跨页扫描。
 - `POST /pages/concatenate`：page_ids、target_id、orientation、gap，拼接页面。
 
+## 双面扫描配对工作台
+
+用于两次扫描的双面资料：背面可能倒置进纸，并混入缺扫、重扫与补拍单页。配对会话独立保存在工作区 `pairing_sessions` 中，全程不改动原文档页序与原图；只有显式 finalize 才复制生成新文档。
+
+- `POST /documents/{id}/pairing`：为文档建立配对会话，立即分析批次、重复页、空白页与配对建议。
+- `GET /pairing`：会话列表；`GET /pairing/{session_id}`：会话完整视图（含分析、确认配对、忽略清单、就绪度）。
+- `POST /pairing/{session_id}/analyze`：重新计算建议。
+- `GET /pairing/{session_id}/candidates/{page_id}`：某页的候选配对（含补拍页），返回相似度、建议旋转与占用状态。
+- `POST /pairing/{session_id}/confirm-preview`：确认前的影响分析，返回会新增/移除/改动哪些建议、是否替换既有配对、未配对页数变化。
+- `POST /pairing/{session_id}/confirm`：确认一对正反页，参数 `front_id`、`back_id`、`turn`（0/1/2/3，2 表示 180° 倒置转正）、`anchor`。锚点确认后其余建议按锚点重新对齐。
+- `POST /pairing/{session_id}/unconfirm`：撤销配对，返回受影响建议。
+- `POST /pairing/{session_id}/turn`：调整某确认配对的背面旋转。
+- `POST /pairing/{session_id}/ignore` / `POST /pairing/{session_id}/keep`：忽略或保留页面。疑似空白页忽略时必须传 `acknowledge_blank:true`，系统不会自动删除任何页面。
+- `POST /pairing/{session_id}/roles`：调整批次角色（front/back/supplement），同时只能有一个正面、一个背面批次。
+- `GET /pairing/{session_id}/readiness`：完成度检查；仍有未配对/未忽略页、或空白页未显式确认时不可生成。
+- `POST /pairing/{session_id}/finalize`：校验通过后复制页面生成阅读顺序正确的新文档（正反交错、倒置背面在副本上转正），原扫描批次、原图与各页校订独立保留。
+- `POST /pairing/{session_id}/reopen`：复制为新会话继续调整，已确认配对完整继承。
+- `DELETE /pairing/{session_id}`：删除配对工作记录，不影响任何扫描页或已生成文档。
+- `POST /demo/duplex`：载入含倒置背面、缺扫、重扫、空白页与补拍页的双面练习资料。
+
+相似度基于 SIFT 关键点的 RANSAC 空间一致性（内点落格分散度）结合感知哈希，对重扫噪声稳健；描述子以二进制存于 `paircache` 目录，不写入工作区 JSON。
+
 ## 区域、历史、快照
 
 `POST /pages/{id}/regions` 参数name、kind（text/illustration/other）、region。返回区域id，下载 `GET /pages/{id}/regions/{region_id}`。`POST /pages/{id}/restore` 参数空对象恢复原图，或传history_id恢复该版本。`GET /pages/{id}` 返回完整图像与OCR历史。
@@ -129,7 +151,27 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 | POST | `/api/documents/<document_id>/report` |
 | GET | `/api/documents/<document_id>/suggest-name` |
 | GET | `/api/documents/<document_id>/text-statistics` |
-| GET | `/api/documents/<identifier>` |
+| GET | `/api/demo/recovery` 见 POST |
+| POST | `/api/demo/duplex` |
+| POST | `/api/demo/recovery` |
+| GET | `/api/documents` 见集合 |
+| POST | `/api/documents` |
+| POST | `/api/documents/<document_id>/pairing` |
+| GET | `/api/pairing` |
+| GET | `/api/pairing/<session_id>` |
+| POST | `/api/pairing/<session_id>/analyze` |
+| GET | `/api/pairing/<session_id>/candidates/<page_id>` |
+| POST | `/api/pairing/<session_id>/confirm-preview` |
+| POST | `/api/pairing/<session_id>/confirm` |
+| POST | `/api/pairing/<session_id>/unconfirm` |
+| POST | `/api/pairing/<session_id>/turn` |
+| POST | `/api/pairing/<session_id>/ignore` |
+| POST | `/api/pairing/<session_id>/keep` |
+| POST | `/api/pairing/<session_id>/roles` |
+| GET | `/api/pairing/<session_id>/readiness` |
+| POST | `/api/pairing/<session_id>/finalize` |
+| POST | `/api/pairing/<session_id>/reopen` |
+| DELETE | `/api/pairing/<session_id>` |
 | PATCH | `/api/documents/<identifier>` |
 | DELETE | `/api/documents/<identifier>` |
 | POST | `/api/documents/<identifier>/export` |

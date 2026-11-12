@@ -311,4 +311,87 @@ def create_app(data_root=None, demo=True):
 
     from .advanced import register_advanced
     register_advanced(app, store, documents, exporter)
+
+    from .duplex import Duplex
+    duplex = Duplex(store)
+    app.extensions['duplex'] = duplex
+
+    @app.get('/api/pairing')
+    def pairing_list():
+        return jsonify(duplex.list_sessions())
+
+    @app.post('/api/documents/<identifier>/pairing')
+    def pairing_create(identifier):
+        store.get('documents', identifier)
+        return jsonify(duplex.create(identifier, body())), 201
+
+    @app.get('/api/pairing/<session_id>')
+    def pairing_get(session_id):
+        return jsonify(duplex.get(session_id))
+
+    @app.post('/api/pairing/<session_id>/analyze')
+    def pairing_analyze(session_id):
+        return jsonify(duplex.analyze(session_id))
+
+    @app.get('/api/pairing/<session_id>/candidates/<page_id>')
+    def pairing_candidates(session_id, page_id):
+        return jsonify(duplex.candidates(session_id, page_id))
+
+    @app.post('/api/pairing/<session_id>/confirm-preview')
+    def pairing_confirm_preview(session_id):
+        return jsonify(duplex.confirm_preview(session_id, body()))
+
+    @app.post('/api/pairing/<session_id>/confirm')
+    def pairing_confirm(session_id):
+        return jsonify(duplex.confirm(session_id, body()))
+
+    @app.post('/api/pairing/<session_id>/unconfirm')
+    def pairing_unconfirm(session_id):
+        return jsonify(duplex.unconfirm(session_id, body()))
+
+    @app.post('/api/pairing/<session_id>/turn')
+    def pairing_turn(session_id):
+        return jsonify(duplex.set_turn(session_id, body()))
+
+    @app.post('/api/pairing/<session_id>/ignore')
+    def pairing_ignore(session_id):
+        return jsonify(duplex.ignore(session_id, body()))
+
+    @app.post('/api/pairing/<session_id>/keep')
+    def pairing_keep(session_id):
+        return jsonify(duplex.keep(session_id, body()))
+
+    @app.post('/api/pairing/<session_id>/roles')
+    def pairing_roles(session_id):
+        return jsonify(duplex.set_roles(session_id, body()))
+
+    @app.get('/api/pairing/<session_id>/readiness')
+    def pairing_readiness(session_id):
+        return jsonify(duplex.finalize_check(session_id))
+
+    @app.post('/api/pairing/<session_id>/finalize')
+    def pairing_finalize(session_id):
+        return jsonify(duplex.finalize(session_id, documents, body())), 201
+
+    @app.post('/api/pairing/<session_id>/reopen')
+    def pairing_reopen(session_id):
+        return jsonify(duplex.reopen(session_id, body())), 201
+
+    @app.delete('/api/pairing/<session_id>')
+    def pairing_delete(session_id):
+        return jsonify(duplex.delete(session_id))
+
+    @app.post('/api/demo/duplex')
+    def load_duplex_demo():
+        from .demo import build_duplex_demo
+        value = body()
+        collection_id = value.get('collection_id')
+        if not collection_id:
+            collection_id = store.snapshot()['collections'] and next(iter(store.snapshot()['collections']))
+            if not collection_id:
+                collection_id = store.create_collection('双面扫描练习', '演示资料')['id']
+        store.get('collections', collection_id)
+        document_id = build_duplex_demo(store, documents, collection_id)
+        return jsonify(documents.document(document_id)), 201
+
     return app

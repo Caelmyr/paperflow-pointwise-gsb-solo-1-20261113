@@ -239,6 +239,10 @@ class Archives:
                         files.update((entry['before'], entry['after']))
                     for region in page.get('regions', []):
                         files.add(region['path'])
+            for session in snapshot.get('pairing_sessions', {}).values():
+                for page in session.get('pages', []):
+                    if page.get('descriptor_path'):
+                        files.add(page['descriptor_path'])
             manifest = {}
             with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr('workspace.json', json.dumps(snapshot, ensure_ascii=False, indent=2))

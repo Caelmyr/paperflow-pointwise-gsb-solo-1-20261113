@@ -188,6 +188,18 @@ def create_app(data_root=None, demo=True):
         page = store.get('pages', identifier)
         return jsonify(detect_edges(read_image(store.resolve(page['current']))))
 
+    @app.get('/api/boards/<identifier>/image')
+    def board_image(identifier):
+        board = store.snapshot().get('boards', {}).get(identifier)
+        require(board is not None, '票据板不存在', 404)
+        return send_file(store.resolve(board['image']), conditional=True)
+
+    @app.post('/api/pages/<identifier>/sheet-detection')
+    def sheet_detection(identifier):
+        page = store.get('pages', identifier)
+        from .imaging import detect_sheets
+        return jsonify(detect_sheets(read_image(store.resolve(page['current']))))
+
     @app.get('/api/pages/<identifier>/skew')
     def skew(identifier):
         page = store.get('pages', identifier)
@@ -266,10 +278,18 @@ def create_app(data_root=None, demo=True):
         value = body()
         document_id = value.get('document_id')
         store.get('documents', document_id)
-        choice(value.get('sample', 'clean'), '演示样本', ('clean', 'photo', 'pdf'))
+        choice(value.get('sample', 'clean'), '演示样本', ('clean', 'photo', 'pdf', 'board'))
         sample = value.get('sample', 'clean')
-        path = ROOT / 'demo' / {'clean': 'demo_1.png', 'photo': 'demo_photo.png', 'pdf': 'demo_document.pdf'}[sample]
-        return jsonify(page_ids=documents.import_path(document_id, path)), 201
+        sample_file = {'clean': 'demo_1.png', 'photo': 'demo_photo.png', 'pdf': 'demo_document.pdf', 'board': 'demo_receipt_board.png'}[sample]
+        path = ROOT / 'demo' / sample_file
+        page_ids = documents.import_path(document_id, path)
+        result = {'page_ids': page_ids}
+        if sample == 'board':
+            from .boards import Boards
+            boards = Boards(store, documents)
+            board = boards.create(page_ids[0], {'name': '桌面采购票据板'})
+            result['board'] = boards.detect(board['id'], {'replace': True})
+        return jsonify(result), 201
 
     @app.post('/api/demo/recovery')
     def load_recovery_demo():

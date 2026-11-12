@@ -80,6 +80,39 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 
 `POST /documents/{id}/checkpoints` 保存name命名快照；`GET /documents/{id}/checkpoints` 列表；`GET /checkpoints/{id}/diff` 差异；`POST /checkpoints/{id}/restore` 恢复为新文档（可选name、collection_id）。
 
+## 票据板（一张照片中的多张票据）
+
+一张桌面照片可建立一块票据板（每照片仅一块，锚定照片快照，之后页面处理不影响板内图像）。票据候选状态为 candidate 待确认 / confirmed 已确认 / blocked 无法处理 / extracted 已校正。服务端用四角掩码 IoU 校验已确认候选，重叠达到 85% 视为同一块可见内容被重复认领，返回 409 `overlap`；遮挡区域只按可见像素成轮廓，不会补造。
+
+```
+POST /pages/{id}/boards            {"name":"桌面采购票据板"} 建立票据板并返回板记录
+GET  /boards?document_id=...       票据板列表（含候选计数）
+GET  /boards/{id}                  板详情：候选、四角、状态、出处
+GET  /boards/{id}/image            板锚定的照片快照
+POST /boards/{id}/detect           {"replace":false} 自动寻找多张票据（分水岭+边缘层次）
+POST /boards/{id}/reset            清空候选并断开结果页出处（页面本身保留）
+DELETE /boards/{id}                板上仍有校正结果时返回409
+```
+
+候选维护（写操作携带板 `revision` 可做乐观锁，过期返回409 `revision_conflict`）：
+
+```
+POST   /boards/{id}/candidates                       手描候选 {name,points:[[x,y]×4]}
+PATCH  /boards/{id}/candidates/{cid}                 改名/备注/拖动四角 {revision,name,note,points}
+DELETE /boards/{id}/candidates/{cid}                 移除候选（已校正候选拒绝）
+POST   /boards/{id}/candidates/{cid}/confirm         确认范围（先做重叠校验）
+POST   /boards/{id}/candidates/{cid}/block           {"reason"} 标记无法处理，保留位置与原因
+POST   /boards/{id}/candidates/{cid}/reopen          重新打开 blocked/confirmed 候选
+POST   /boards/{id}/candidates/{cid}/split           {"candidates":[四角,...,2–6组]} 人工拆开
+POST   /boards/{id}/merge                            {"candidate_ids":[...],"name"} 人工合并
+POST   /boards/{id}/candidates/{cid}/extract         透视校正生成独立页面
+POST   /boards/{id}/candidates/{cid}/reextract       重新校正生成新页面，旧页面与其他票据不变
+POST   /boards/{id}/candidates/{cid}/ocr             对已校正页面执行OCR
+GET    /pages/{id}/board-provenance                  页面回到票据板的出处（板、候选、来源照片页）
+```
+
+`extract` 参数：`document_id`（缺省用板所属文档）、`ocr`（布尔，校正后立即识别）、`language`、`psm`、`revision`。成功后候选状态为 extracted，并在结果页面写入 `board_candidate` 双向关联；该页面在板上仍有引用时不能删除。某张票据无法处理时只保留该候选的待处理位置和原因，其他候选可独立确认、校正与导出。
+
 ## 其他服务
 
 质量分析 `/pages/{id}/analysis`，版面 `/layout`，处理前后差异 `/comparison`，建议 `/recommendations`；元数据 `/documents/{id}/metadata`；检索分面 `/catalog/facets`；POST `/catalog/query` 支持分类、标签、作者、集合、OCR、分页排序；复核队列 `/review/queue`；低置信度 `/pages/{id}/low-confidence`；页面批注 `/notes`；工作流 `/pipelines` 与 `/pipeline-runs`；导出预检 `/documents/{id}/preflight`；完整性 `/audit/integrity?deep=1`；空间 `/audit/storage`；来源 `/sources`；备份 `/backups`；归档导入 multipart `/archives/import`（file、collection_id）；用户设置 `/preferences`；会话 `/session`。
@@ -101,6 +134,23 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 | GET | `/api/backups` |
 | GET | `/api/backups/<identifier>/download` |
 | GET | `/api/backups/<identifier>/verify` |
+| GET | `/api/boards` |
+| GET | `/api/boards/<board_id>` |
+| DELETE | `/api/boards/<board_id>` |
+| POST | `/api/boards/<board_id>/detect` |
+| POST | `/api/boards/<board_id>/merge` |
+| POST | `/api/boards/<board_id>/reset` |
+| GET | `/api/boards/<identifier>/image` |
+| POST | `/api/boards/<board_id>/candidates` |
+| PATCH | `/api/boards/<board_id>/candidates/<candidate_id>` |
+| DELETE | `/api/boards/<board_id>/candidates/<candidate_id>` |
+| POST | `/api/boards/<board_id>/candidates/<candidate_id>/block` |
+| POST | `/api/boards/<board_id>/candidates/<candidate_id>/confirm` |
+| POST | `/api/boards/<board_id>/candidates/<candidate_id>/extract` |
+| POST | `/api/boards/<board_id>/candidates/<candidate_id>/ocr` |
+| POST | `/api/boards/<board_id>/candidates/<candidate_id>/reextract` |
+| POST | `/api/boards/<board_id>/candidates/<candidate_id>/reopen` |
+| POST | `/api/boards/<board_id>/candidates/<candidate_id>/split` |
 | POST | `/api/catalog/batch` |
 | GET | `/api/catalog/facets` |
 | POST | `/api/catalog/query` |
@@ -154,6 +204,7 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 | GET | `/api/pages/<identifier>/regions/<region_id>` |
 | POST | `/api/pages/<identifier>/restore` |
 | GET | `/api/pages/<identifier>/skew` |
+| POST | `/api/pages/<identifier>/sheet-detection` |
 | GET | `/api/pages/<page_id>/analysis` |
 | GET | `/api/pages/<page_id>/comparison` |
 | GET | `/api/pages/<page_id>/layout` |
@@ -166,6 +217,8 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 | POST | `/api/pages/<page_id>/review` |
 | POST | `/api/pages/<page_id>/split-spread` |
 | POST | `/api/pages/concatenate` |
+| GET | `/api/pages/<page_id>/board-provenance` |
+| POST | `/api/pages/<page_id>/boards` |
 | POST | `/api/pages/copy` |
 | POST | `/api/pages/delete` |
 | POST | `/api/pages/move` |

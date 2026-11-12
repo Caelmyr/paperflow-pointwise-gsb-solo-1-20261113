@@ -347,6 +347,83 @@ def register_advanced(app, store, documents, exporter):
     preflight = Preflight(store, exporter)
     app.extensions['preflight'] = preflight
 
+    from .boards import Boards
+    boards = Boards(store, documents)
+    app.extensions['boards'] = boards
+
+    @routes.get('/boards')
+    def board_list():
+        return jsonify(boards.list_boards(request.args.get('document_id')))
+
+    @routes.post('/pages/<page_id>/boards')
+    def board_create(page_id):
+        return jsonify(boards.create(page_id, body())), 201
+
+    @routes.get('/boards/<board_id>')
+    def board_get(board_id):
+        return jsonify(boards.get_board(board_id))
+
+    @routes.delete('/boards/<board_id>')
+    def board_delete(board_id):
+        return jsonify(boards.delete(board_id))
+
+    @routes.post('/boards/<board_id>/reset')
+    def board_reset(board_id):
+        return jsonify(boards.reset(board_id))
+
+    @routes.post('/boards/<board_id>/detect')
+    def board_detect(board_id):
+        return jsonify(boards.detect(board_id, body()))
+
+    @routes.post('/boards/<board_id>/candidates')
+    def candidate_add(board_id):
+        return jsonify(boards.add_candidate(board_id, body())), 201
+
+    @routes.patch('/boards/<board_id>/candidates/<candidate_id>')
+    def candidate_update(board_id, candidate_id):
+        return jsonify(boards.update_candidate(board_id, candidate_id, body(), body().get('revision')))
+
+    @routes.delete('/boards/<board_id>/candidates/<candidate_id>')
+    def candidate_remove(board_id, candidate_id):
+        return jsonify(boards.remove_candidate(board_id, candidate_id))
+
+    @routes.post('/boards/<board_id>/candidates/<candidate_id>/confirm')
+    def candidate_confirm(board_id, candidate_id):
+        return jsonify(boards.confirm(board_id, candidate_id))
+
+    @routes.post('/boards/<board_id>/candidates/<candidate_id>/block')
+    def candidate_block(board_id, candidate_id):
+        return jsonify(boards.mark_blocked(board_id, candidate_id, body()))
+
+    @routes.post('/boards/<board_id>/candidates/<candidate_id>/reopen')
+    def candidate_reopen(board_id, candidate_id):
+        return jsonify(boards.reopen(board_id, candidate_id))
+
+    @routes.post('/boards/<board_id>/candidates/<candidate_id>/split')
+    def candidate_split(board_id, candidate_id):
+        return jsonify(boards.split_candidate(board_id, candidate_id, body()))
+
+    @routes.post('/boards/<board_id>/merge')
+    def candidate_merge(board_id):
+        return jsonify(boards.merge_candidates(board_id, body()))
+
+    @routes.post('/boards/<board_id>/candidates/<candidate_id>/extract')
+    def candidate_extract(board_id, candidate_id):
+        values = body()
+        return jsonify(boards.extract(board_id, candidate_id, values, values.get('revision')))
+
+    @routes.post('/boards/<board_id>/candidates/<candidate_id>/reextract')
+    def candidate_reextract(board_id, candidate_id):
+        return jsonify(boards.reextract(board_id, candidate_id, body()))
+
+    @routes.post('/boards/<board_id>/candidates/<candidate_id>/ocr')
+    def candidate_ocr(board_id, candidate_id):
+        return jsonify(boards.recognize_candidate(board_id, candidate_id, body()))
+
+    @routes.get('/pages/<page_id>/board-provenance')
+    def board_provenance(page_id):
+        return jsonify(boards.provenance(page_id))
+
     @routes.get('/documents/<document_id>/preflight')
     def document_preflight(document_id):
         return jsonify(preflight.document(document_id, request.args.get('kind', 'searchable_pdf')))

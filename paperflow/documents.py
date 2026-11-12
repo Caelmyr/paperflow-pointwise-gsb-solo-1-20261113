@@ -304,6 +304,12 @@ class Documents:
         ids(page_ids)
         with self.store.transaction() as state:
             require(all(page_id in state['pages'] for page_id in page_ids), '待删除页面不存在', 404)
+            boards = state.get('boards', {})
+            for page_id in page_ids:
+                for board in boards.values():
+                    tied = [candidate for candidate in board['candidates']
+                            if (candidate.get('result') or {}).get('page_id') == page_id]
+                    require(not tied, f'页面仍是票据板「{board["name"]}」的校正出处，请先在票据板中重新校正或移除该票据', 409)
             for page_id in page_ids:
                 page = state['pages'].pop(page_id)
                 document = state['documents'][page['document_id']]

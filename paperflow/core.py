@@ -94,7 +94,7 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.path = self.root / 'workspace.json'
-        for directory in ('originals', 'processed', 'thumbs', 'exports', 'regions', 'incoming'):
+        for directory in ('originals', 'processed', 'thumbs', 'exports', 'regions', 'incoming', 'boards'):
             (self.root / directory).mkdir(exist_ok=True)
         if not self.path.exists():
             atomic_json(self.path, {
@@ -105,6 +105,7 @@ class Store:
                 'documents': {},
                 'pages': {},
                 'tasks': {},
+                'boards': {},
                 'events': [],
             })
         self.state = self.read_disk()
@@ -128,7 +129,7 @@ class Store:
 
     def validate(self, state):
         require(state.get('schema') == 1, '不支持的数据版本', 500)
-        for key in ('collections', 'documents', 'pages', 'tasks'):
+        for key in ('collections', 'documents', 'pages', 'tasks', 'boards'):
             require(isinstance(state.get(key), dict), '工作区结构损坏：' + key, 500)
         for document in state['documents'].values():
             require(document['collection_id'] in state['collections'], '文档集合关联损坏', 500)
@@ -141,6 +142,26 @@ class Store:
             require(page['id'] in state['documents'][page['document_id']]['page_ids'], '孤立页面', 500)
             for key in ('original', 'current', 'thumbnail'):
                 self.resolve(page[key])
+            board_link = page.get('board_candidate')
+            if board_link is not None:
+                board = state['boards'].get(board_link['board_id'])
+                require(board is not None, '页面的票据板关联损坏', 500)
+                candidate = next((item for item in board['candidates'] if item['id'] == board_link['candidate_id']), None)
+                require(candidate is not None, '页面的票据候选关联损坏', 500)
+                require(candidate.get('result', {}).get('page_id') == page['id'], '票据来源与页面不一致', 500)
+        for board in state['boards'].values():
+            require(board['page_id'] in state['pages'], '票据板缺少来源照片页面', 500)
+            self.resolve(board['image'])
+            candidate_ids = set()
+            for candidate in board['candidates']:
+                require(candidate['id'] not in candidate_ids, '票据候选标识重复', 500)
+                candidate_ids.add(candidate['id'])
+                result = candidate.get('result')
+                if result and result.get('page_id'):
+                    page = state['pages'].get(result['page_id'])
+                    require(page is not None, '票据结果页面缺失', 500)
+                    link = page.get('board_candidate')
+                    require(link and link['board_id'] == board['id'] and link['candidate_id'] == candidate['id'], '票据出处关联不完整', 500)
 
     def resolve(self, relative):
         require(isinstance(relative, str), '文件引用无效')
@@ -259,6 +280,11 @@ class Store:
         self.get('documents', identifier)
         with self.transaction() as state:
             record = state['documents'].pop(identifier)
+            for board in state.get('boards', {}).values():
+                tied = [candidate for candidate in board['candidates']
+                        if (candidate.get('result') or {}).get('document_id') == identifier
+                        or (board['page_id'] in record['page_ids'])]
+                require(not tied, '文档中的照片或票据结果仍被票据板引用，请先处理票据板', 409)
             for page_id in record['page_ids']:
                 state['pages'].pop(page_id)
             self.event(state, '删除文档', identifier, {'name': record['name']})

@@ -39,6 +39,8 @@ class Auditor:
                         references[entry[field]].append({'kind': 'checkpoint', 'id': checkpoint['id']})
                 for region in page.get('regions', []):
                     references[region['path']].append({'kind': 'checkpoint', 'id': checkpoint['id']})
+        for board in state.get('boards', {}).values():
+            references[board['image']].append({'kind': 'board', 'id': board['id']})
         return references
 
     def integrity(self, deep=False):
@@ -112,7 +114,7 @@ class Auditor:
         categories = {}
         total_bytes = 0
         total_files = 0
-        for category in ('sources', 'originals', 'processed', 'thumbs', 'regions', 'exports', 'incoming'):
+        for category in ('sources', 'originals', 'processed', 'thumbs', 'regions', 'exports', 'incoming', 'boards'):
             directory = self.store.root / category
             files = 0
             size = 0

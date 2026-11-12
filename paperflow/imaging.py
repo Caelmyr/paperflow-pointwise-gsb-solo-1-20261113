@@ -126,6 +126,171 @@ def detect_edges(image):
     }
 
 
+def mask_iou(mask_a, mask_b):
+    intersection = np.logical_and(mask_a, mask_b).sum()
+    union = np.logical_or(mask_a, mask_b).sum()
+    return float(intersection / max(union, 1))
+
+
+def quad_mask(points, width, height, scale):
+    canvas = np.zeros((max(1, round(height * scale)), max(1, round(width * scale))), np.uint8)
+    polygon = (np.asarray(points, dtype=np.float32) * scale).astype(np.int32)
+    cv2.fillConvexPoly(canvas, polygon, 1)
+    return canvas
+
+
+def quad_iou(points_a, points_b, width, height):
+    scale = min(1, 480 / max(width, height))
+    mask_a = quad_mask(points_a, width, height, scale)
+    mask_b = quad_mask(points_b, width, height, scale)
+    return mask_iou(mask_a, mask_b)
+
+
+def contour_quad(contour):
+    perimeter = cv2.arcLength(contour, True)
+    for factor in (0.02, 0.035, 0.05, 0.075):
+        polygon = cv2.approxPolyDP(contour, factor * perimeter, True)
+        if len(polygon) == 4 and cv2.isContourConvex(polygon):
+            return polygon.reshape(4, 2).astype(np.float32), 'polygon'
+    hull = cv2.convexHull(contour)
+    solidity = cv2.contourArea(contour) / max(cv2.contourArea(hull), 1)
+    # 多个纸张轮廓粘连时近似结果多于四角，仅在轮廓本身较完整时退化为外接矩形
+    if solidity >= 0.82:
+        return cv2.boxPoints(cv2.minAreaRect(contour)).astype(np.float32), 'rect'
+    return None, 'rejected'
+
+
+def detect_sheets(image, limit=12):
+    """检测同一张桌面照片中的多张纸张，返回互不重叠的四角候选。
+
+    用距离变换 + 分水岭把相互接触、局部重叠的纸张分开；只依据照片中真实
+    可见的像素生成轮廓，遮挡造成的缺损反映在 visible_ratio 上，不会外推
+    或补造被遮住的纸面。
+    """
+    height, width = image.shape[:2]
+    limit = number(limit, '候选数量上限', 1, 20, True)
+    ratio = min(1, 1200 / max(height, width))
+    small = cv2.resize(image, None, fx=ratio, fy=ratio, interpolation=cv2.INTER_AREA)
+    frame_area = small.shape[0] * small.shape[1]
+    luminance = gray(small)
+    blurred = cv2.GaussianBlur(luminance, (5, 5), 0)
+    _, bright = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    bright = cv2.morphologyEx(bright, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8), iterations=2)
+    regions = watershed_regions(bright)
+    edges = cv2.Canny(blurred, 40, 120)
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    edge_contours, hierarchy = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    gathered = []
+    for label, region in regions:
+        contours, _ = cv2.findContours(region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = [contour for contour in contours if cv2.contourArea(contour) >= frame_area * 0.03]
+        if not contours:
+            continue
+        candidate = build_sheet_candidate(max(contours, key=cv2.contourArea), ratio, width, height, 'watershed', label)
+        if candidate:
+            gathered.append(candidate)
+    hierarchy = hierarchy[0] if edge_contours and hierarchy is not None else []
+    for index, contour in enumerate(edge_contours):
+        area = cv2.contourArea(contour)
+        if area < frame_area * 0.03:
+            continue
+        # 子轮廓面积明显小于父轮廓（<85%）才视为另一张纸，跳过粘连外框；
+        # 票据自身的装饰内框几乎与外框等大，不触发跳过。
+        nested_sheet = any(
+            hierarchy[child][3] == index and cv2.contourArea(edge_contours[child]) < area * 0.85
+            and cv2.contourArea(edge_contours[child]) >= frame_area * 0.03
+            for child in range(len(hierarchy))
+        )
+        if nested_sheet:
+            continue
+        candidate = build_sheet_candidate(contour, ratio, width, height, 'edge', None)
+        if candidate:
+            gathered.append(candidate)
+    gathered.sort(key=lambda item: (item['source'] != 'edge', -item['area_ratio']))
+    kept = []
+    for candidate in gathered:
+        duplicate = False
+        for other in kept:
+            value = quad_iou(candidate['points'], other['points'], width, height)
+            if value < 0.55:
+                continue
+            # 同一张纸的内外边框面积接近、互相高度包含 → 重复轮廓，只保留先入选者
+            size_ratio = min(candidate['area_ratio'], other['area_ratio']) / max(candidate['area_ratio'], other['area_ratio'])
+            if value >= 0.9 or size_ratio >= 0.75:
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(candidate)
+        if len(kept) >= limit:
+            break
+    # 分水岭可能把两张相触的纸合成一个大区域；若大候选内部已存在更细的纸张轮廓，剔除大候选
+    refined = []
+    for candidate in kept:
+        covered = [other for other in kept if other is not candidate
+                   and quad_iou(candidate['points'], other['points'], width, height) >= 0.18]
+        if candidate['source'] == 'watershed' and covered:
+            continue
+        # 小于最大候选 18% 的孤立轮廓通常是文字块或页面装饰，不构成独立纸张
+        if candidate['area_ratio'] < max(item['area_ratio'] for item in kept) * 0.18:
+            continue
+        refined.append(candidate)
+    return {'detected': bool(refined), 'width': width, 'height': height, 'candidates': refined}
+
+
+def watershed_regions(bright):
+    distance = cv2.distanceTransform(bright, cv2.DIST_L2, 5)
+    if distance.max() <= 0:
+        return []
+    _, sure = cv2.threshold(distance, 0.32 * distance.max(), 255, 0)
+    sure = sure.astype(np.uint8)
+    count, markers = cv2.connectedComponents(sure)
+    if count <= 1:
+        return []
+    unknown = cv2.subtract(bright, sure)
+    markers = markers + 1
+    markers[unknown == 255] = 0
+    color = cv2.cvtColor(bright, cv2.COLOR_GRAY2BGR)
+    markers = cv2.watershed(color, markers)
+    regions = []
+    for label in range(2, count + 1):
+        region = np.where(markers == label, 255, 0).astype(np.uint8)
+        region = cv2.morphologyEx(region, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+        regions.append((label, region))
+    return regions
+
+
+def build_sheet_candidate(contour, ratio, width, height, source, label):
+    contour_area = cv2.contourArea(contour)
+    points_small, shape = contour_quad(contour)
+    if points_small is None:
+        return None
+    if cv2.contourArea(points_small) < (height * width * ratio * ratio) * 0.025:
+        return None
+    try:
+        points = ordered_quad(points_small / ratio)
+    except DomainError:
+        return None
+    quad_area = cv2.contourArea(points_small)
+    visible_ratio = float(min(1, contour_area / max(quad_area, 1)))
+    solidity = float(contour_area / max(cv2.contourArea(cv2.convexHull(contour)), 1))
+    coverage = float(cv2.contourArea(points) / (width * height))
+    score = min(0.99, 0.55 * coverage + 0.25 * visible_ratio + 0.2 * solidity)
+    if shape == 'rect':
+        score *= 0.85
+    if source == 'edge':
+        score *= 0.9
+    return {
+        'points': points.round(2).tolist(),
+        'confidence': round(max(0.05, score), 3),
+        'area_ratio': round(coverage, 4),
+        'visible_ratio': round(visible_ratio, 3),
+        'shape': shape,
+        'source': source,
+        'watershed_label': label,
+    }
+
+
 def perspective(image, points):
     points = ordered_quad(points)
     height, width = image.shape[:2]

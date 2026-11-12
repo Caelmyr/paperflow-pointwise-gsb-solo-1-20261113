@@ -239,6 +239,8 @@ class Archives:
                         files.update((entry['before'], entry['after']))
                     for region in page.get('regions', []):
                         files.add(region['path'])
+            for board in snapshot.get('boards', {}).values():
+                files.add(board['image'])
             manifest = {}
             with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr('workspace.json', json.dumps(snapshot, ensure_ascii=False, indent=2))

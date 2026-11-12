@@ -80,6 +80,23 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 
 `POST /documents/{id}/checkpoints` 保存name命名快照；`GET /documents/{id}/checkpoints` 列表；`GET /checkpoints/{id}/diff` 差异；`POST /checkpoints/{id}/restore` 恢复为新文档（可选name、collection_id）。
 
+## 双文档对比审阅
+
+用于两份独立文档（同一合同的两次扫描）之间的差异审阅。所有结论绑定双方当时的页面版本；任一页重扫（图像 revision/current 变化）或 OCR 校订后，相关配对自动标记 `stale`，旧结论保留在 `stale_reviews` 中供核对，刷新后按新版本重算证据。
+
+- `POST /cross-comparisons`：body 含 `name`、`left_document_id`、`right_document_id`，两份文档必须不同且各含 1–200 页。
+- `GET /cross-comparisons` / `GET /cross-comparisons/{id}`：项目列表与详情（配对、未配对页、决定、失效信息）。
+- `DELETE /cross-comparisons/{id}`：删除项目，不影响原文档。
+- `POST /cross-comparisons/{id}/auto-match`：可选 `{"reset": true}` 清空后重配。自动匹配分两级：先用对位移/亮度稳健的相位相关相似度，在顺序带宽内做全局序列对齐（动态规划），天然处理页移动、插入附件与缺页；再仅对候选对执行 ECC 精配准与笔画差异分析。两侧都有 OCR 但文字相似度低于 0.55 时，同模板的不同附件/单据不会被自动配对，留给人工决定。
+- `POST /cross-comparisons/{id}/pairs`：人工配对 `left_page_id` + `right_page_id`，页面必须处于未配对状态，否则 409；人工配对仍展示全部差异证据。
+- `POST /cross-comparisons/{id}/pairs/{pair_id}/confirm`、`DELETE /cross-comparisons/{id}/pairs/{pair_id}`：确认建议、解除配对（页面回到未配对列表）。
+- `POST /cross-comparisons/{id}/decisions`：对未配对页作决定，`side` 为 left/right，`decision` 为 duplicate/missing/inserted/ignored/pending，可带 note、reviewer。
+- `POST /cross-comparisons/{id}/pairs/{pair_id}/review`：审阅结论 verdict 为 equivalent/content_changed/text_changed/different/uncertain，保存双方版本指纹与评分快照。
+- `POST /cross-comparisons/{id}/pairs/{pair_id}/refresh` 与 `POST /cross-comparisons/{id}/refresh`：按当前版本重算视觉与文字证据，旧审阅结论转入 `stale_reviews`。
+- `GET /cross-comparisons/{id}/pairs/{pair_id}/diff-image`：实时生成对齐差异 PNG（红=左有右无，绿=右页新增），不落盘；响应头 `X-Diff-Meta` 带相关系数、失配率与判定。
+
+视觉判定先做 CLAHE 光照归一化，再以相位相关估计平移、ECC 欧氏变换吸收小角度旋转，最后用 Otsu 文字掩膜与距离变换提取真实笔画差异，因此轻微拍摄位移、亮度变化不会被标成整页修改。
+
 ## 其他服务
 
 质量分析 `/pages/{id}/analysis`，版面 `/layout`，处理前后差异 `/comparison`，建议 `/recommendations`；元数据 `/documents/{id}/metadata`；检索分面 `/catalog/facets`；POST `/catalog/query` 支持分类、标签、作者、集合、OCR、分页排序；复核队列 `/review/queue`；低置信度 `/pages/{id}/low-confidence`；页面批注 `/notes`；工作流 `/pipelines` 与 `/pipeline-runs`；导出预检 `/documents/{id}/preflight`；完整性 `/audit/integrity?deep=1`；空间 `/audit/storage`；来源 `/sources`；备份 `/backups`；归档导入 multipart `/archives/import`（file、collection_id）；用户设置 `/preferences`；会话 `/session`。
@@ -104,12 +121,25 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 | POST | `/api/catalog/batch` |
 | GET | `/api/catalog/facets` |
 | POST | `/api/catalog/query` |
-| DELETE | `/api/checkpoints/<identifier>` |
 | GET | `/api/checkpoints/<identifier>/diff` |
 | POST | `/api/checkpoints/<identifier>/restore` |
+| DELETE | `/api/checkpoints/<identifier>` |
 | POST | `/api/collections` |
 | PATCH | `/api/collections/<identifier>` |
 | DELETE | `/api/collections/<identifier>` |
+| POST | `/api/cross-comparisons` |
+| GET | `/api/cross-comparisons` |
+| GET | `/api/cross-comparisons/<identifier>` |
+| DELETE | `/api/cross-comparisons/<identifier>` |
+| POST | `/api/cross-comparisons/<identifier>/auto-match` |
+| POST | `/api/cross-comparisons/<identifier>/decisions` |
+| POST | `/api/cross-comparisons/<identifier>/pairs` |
+| POST | `/api/cross-comparisons/<identifier>/pairs/<pair_id>/confirm` |
+| DELETE | `/api/cross-comparisons/<identifier>/pairs/<pair_id>` |
+| POST | `/api/cross-comparisons/<identifier>/pairs/<pair_id>/refresh` |
+| POST | `/api/cross-comparisons/<identifier>/pairs/<pair_id>/review` |
+| GET | `/api/cross-comparisons/<identifier>/pairs/<pair_id>/diff-image` |
+| POST | `/api/cross-comparisons/<identifier>/refresh` |
 | POST | `/api/demo` |
 | POST | `/api/documents` |
 | POST | `/api/documents/<document_id>/blank` |

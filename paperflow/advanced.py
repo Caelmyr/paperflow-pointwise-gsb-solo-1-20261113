@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request, send_file
+import json
+
+from flask import Blueprint, current_app, jsonify, request, send_file
 
 from . import analysis, layout
 from .archive import Archives
@@ -284,10 +286,75 @@ def register_advanced(app, store, documents, exporter):
     from .sources import Sources
     from .checkpoints import Checkpoints
     from .assembly import Assembly
+    from .crosscompare import CrossComparisons
     sources = Sources(store)
     checkpoints = Checkpoints(store)
     assembly = Assembly(store, documents)
-    app.extensions.update(sources=sources, checkpoints=checkpoints, assembly=assembly)
+    cross_comparisons = CrossComparisons(store)
+    app.extensions.update(sources=sources, checkpoints=checkpoints, assembly=assembly,
+                          cross_comparisons=cross_comparisons)
+
+    # ------------------------------------------------------------ 双文档对比审阅
+    @routes.post('/cross-comparisons')
+    def create_cross_comparison():
+        return jsonify(cross_comparisons.create(body())), 201
+
+    @routes.get('/cross-comparisons')
+    def list_cross_comparisons():
+        return jsonify(cross_comparisons.list_projects())
+
+    @routes.get('/cross-comparisons/<identifier>')
+    def get_cross_comparison(identifier):
+        return jsonify(cross_comparisons.detail(identifier))
+
+    @routes.delete('/cross-comparisons/<identifier>')
+    def delete_cross_comparison(identifier):
+        return jsonify(cross_comparisons.delete(identifier))
+
+    @routes.post('/cross-comparisons/<identifier>/auto-match')
+    def auto_match_cross(identifier):
+        return jsonify(cross_comparisons.auto_match(identifier, body()))
+
+    @routes.post('/cross-comparisons/<identifier>/pairs')
+    def manual_match_cross(identifier):
+        return jsonify(cross_comparisons.manual_match(identifier, body())), 201
+
+    @routes.post('/cross-comparisons/<identifier>/pairs/<pair_id>/confirm')
+    def confirm_pair_cross(identifier, pair_id):
+        return jsonify(cross_comparisons.confirm_pair(identifier, pair_id))
+
+    @routes.delete('/cross-comparisons/<identifier>/pairs/<pair_id>')
+    def unmatch_pair_cross(identifier, pair_id):
+        return jsonify(cross_comparisons.unmatch(identifier, pair_id))
+
+    @routes.post('/cross-comparisons/<identifier>/decisions')
+    def pair_decision_cross(identifier):
+        return jsonify(cross_comparisons.set_decision(identifier, body()))
+
+    @routes.post('/cross-comparisons/<identifier>/pairs/<pair_id>/review')
+    def review_pair_cross(identifier, pair_id):
+        return jsonify(cross_comparisons.review_pair(identifier, pair_id, body()))
+
+    @routes.post('/cross-comparisons/<identifier>/pairs/<pair_id>/refresh')
+    def refresh_pair_cross(identifier, pair_id):
+        return jsonify(cross_comparisons.refresh_pair(identifier, pair_id))
+
+    @routes.post('/cross-comparisons/<identifier>/refresh')
+    def refresh_project_cross(identifier):
+        return jsonify(cross_comparisons.refresh_project(identifier))
+
+    @routes.get('/cross-comparisons/<identifier>/pairs/<pair_id>/diff-image')
+    def diff_image_cross(identifier, pair_id):
+        import cv2
+        image, meta = cross_comparisons.pair_visual(identifier, pair_id)
+        ok, encoded = cv2.imencode('.png', image)
+        require(ok, '差异图编码失败', 500)
+        response = current_app.response_class(
+            encoded.tobytes(), mimetype='image/png'
+        )
+        response.headers['X-Diff-Meta'] = json.dumps(meta, ensure_ascii=False)
+        response.headers['Cache-Control'] = 'no-store'
+        return response
 
     @routes.get('/sources')
     def source_list():

@@ -141,6 +141,13 @@ class Store:
             require(page['id'] in state['documents'][page['document_id']]['page_ids'], '孤立页面', 500)
             for key in ('original', 'current', 'thumbnail'):
                 self.resolve(page[key])
+        for project in state.get('cross_comparisons', {}).values():
+            require(project['left_document_id'] in state['documents'], '对比左侧文档关联损坏', 500)
+            require(project['right_document_id'] in state['documents'], '对比右侧文档关联损坏', 500)
+            pair_left = [pair['left_page_id'] for pair in project['pairs']]
+            pair_right = [pair['right_page_id'] for pair in project['pairs']]
+            require(len(pair_left) == len(set(pair_left)), '对比左侧配对重复', 500)
+            require(len(pair_right) == len(set(pair_right)), '对比右侧配对重复', 500)
 
     def resolve(self, relative):
         require(isinstance(relative, str), '文件引用无效')

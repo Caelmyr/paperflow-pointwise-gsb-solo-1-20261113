@@ -39,6 +39,15 @@ class Auditor:
                         references[entry[field]].append({'kind': 'checkpoint', 'id': checkpoint['id']})
                 for region in page.get('regions', []):
                     references[region['path']].append({'kind': 'checkpoint', 'id': checkpoint['id']})
+        for project in state.get('cross_comparisons', {}).values():
+            for side in ('left', 'right'):
+                for ref in project.get('baselines', {}).get(side, []):
+                    references[ref['current']].append({'kind': 'cross_comparison', 'id': project['id'], 'field': 'baseline'})
+            for pair in project.get('pairs', []):
+                for side in ('left', 'right'):
+                    ref = pair.get('baseline_refs', {}).get(side)
+                    if ref and ref.get('current'):
+                        references[ref['current']].append({'kind': 'cross_comparison', 'id': project['id'], 'field': 'pair_baseline'})
         return references
 
     def integrity(self, deep=False):

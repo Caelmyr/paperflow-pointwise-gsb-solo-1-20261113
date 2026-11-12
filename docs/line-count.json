@@ -7,7 +7,7 @@
     },
     {
       "file": "paperflow/advanced.py",
-      "effective_lines": 282
+      "effective_lines": 334
     },
     {
       "file": "paperflow/analysis.py",
@@ -23,7 +23,7 @@
     },
     {
       "file": "paperflow/audit.py",
-      "effective_lines": 234
+      "effective_lines": 243
     },
     {
       "file": "paperflow/catalog.py",
@@ -34,8 +34,20 @@
       "effective_lines": 108
     },
     {
+      "file": "paperflow/compare_text.py",
+      "effective_lines": 88
+    },
+    {
+      "file": "paperflow/compare_vision.py",
+      "effective_lines": 224
+    },
+    {
       "file": "paperflow/core.py",
-      "effective_lines": 231
+      "effective_lines": 238
+    },
+    {
+      "file": "paperflow/crosscompare.py",
+      "effective_lines": 515
     },
     {
       "file": "paperflow/demo.py",
@@ -110,6 +122,6 @@
       "effective_lines": 34
     }
   ],
-  "total": 5065,
+  "total": 5960,
   "passes_5000": true
 }

@@ -144,6 +144,9 @@ def perspective(image, points):
 
 def rotate(image, angle, expand=True):
     angle = number(angle, '旋转角度', -360, 360)
+    if angle % 360 == 0:
+        # 零角度直接返回原图副本，避免无意义重采样让纠偏在残差噪声里累积漂移
+        return image.copy()
     if angle % 360 == 90:
         return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
     if angle % 360 == 180:
@@ -164,29 +167,24 @@ def rotate(image, angle, expand=True):
     return cv2.warpAffine(image, matrix, (new_width, new_height), flags=cv2.INTER_CUBIC, borderValue=(255, 255, 255))
 
 
-def skew_angle(image):
-    luminance = gray(image)
-    scale = min(1, 1800 / max(luminance.shape))
-    luminance = cv2.resize(luminance, None, fx=scale, fy=scale)
-    binary = cv2.threshold(luminance, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
-    edges = cv2.Canny(binary, 50, 150)
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 1800, 80, minLineLength=max(40, luminance.shape[1] // 10), maxLineGap=20)
-    angles = []
-    weights = []
-    if lines is not None:
-        for x1, y1, x2, y2 in lines[:, 0]:
-            angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
-            if -15 <= angle <= 15:
-                angles.append(angle)
-                weights.append(math.hypot(x2 - x1, y2 - y1))
-    if not angles:
-        return {'angle': 0.0, 'confidence': 0.0, 'lines': 0}
-    ordered = np.argsort(angles)
-    cumulative = np.cumsum(np.asarray(weights)[ordered])
-    index = np.searchsorted(cumulative, cumulative[-1] / 2)
-    angle = float(np.asarray(angles)[ordered][index])
-    deviation = float(np.median(np.abs(np.asarray(angles) - angle)))
-    return {'angle': round(angle, 3), 'confidence': round(max(0, 1 - deviation / 8), 3), 'lines': len(angles)}
+def skew_angle(image, region=None, mode='auto'):
+    """倾斜分析的兼容入口，完整证据见 :func:`paperflow.skew.analyze_skew`。
+
+    返回字段保留历史调用方使用的 ``angle`` / ``confidence`` / ``lines``，
+    其中 ``angle`` 是应施加给 :func:`rotate` 的校正角（视觉度）；
+    文字证据不足时置信度为 0 且角度为 0，不再凭长直线给出确定结论。
+    """
+    from .skew import analyze_skew
+    analysis = analyze_skew(image, region=region, mode=mode)
+    return {
+        'angle': analysis['correction_angle'],
+        'confidence': analysis['confidence'],
+        'lines': analysis['evidence']['credible_tiles'],
+        'status': analysis['status'],
+        'orientation': analysis['orientation'],
+        'detected_angle': analysis['detected_angle'],
+        'notes': analysis['notes'],
+    }
 
 
 def illumination(image, strength):
@@ -292,8 +290,14 @@ def process(image, operation, params):
     elif operation == 'rotate':
         result = rotate(image, params.get('angle', 90))
     elif operation == 'deskew':
-        metadata = skew_angle(image)
-        result = rotate(image, metadata['angle'])
+        from .skew import correction_params
+        angle, metadata = correction_params(image, params)
+        metadata['applied'] = abs(angle) > 0
+        if metadata['applied']:
+            result = rotate(image, angle)
+        else:
+            # 证据不足或页面已水平：保留原状，不制造新的处理图与重采样误差
+            result = image.copy()
     elif operation == 'illumination':
         result = illumination(image, params.get('strength', 0.7))
     elif operation == 'color':

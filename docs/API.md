@@ -27,6 +27,17 @@ POST /pages/{id}/process
 
 revision 可选，不匹配返回409。操作包括 perspective / rotate / deskew / illumination / color / denoise / crop / enhance 及高级滤镜。完整参数模式在 `GET /operations`，每个参数包含类型、默认值、范围、枚举及奇数约束。
 
+### 倾斜校正（deskew）的证据契约
+
+自动纠偏不再按“最长的线”决定方向。`GET /pages/{id}/skew` 返回完整文字证据，可选查询参数：
+
+- `mode=auto|horizontal|vertical`：自动判断，或只采信横排/竖排文字块；
+- `region=x,y,宽,高`：只采信与该可信正文区域相交的证据（全页统一分块，区域仅过滤证据，坐标仍按原图返回）。
+
+响应关键字段：`status`（`ok` 证据一致 / `weak` 证据偏弱 / `conflict` 横排竖排冲突 / `undetermined` 证据不足）、`orientation`（`horizontal`/`vertical`/null）、`detected_angle`（视觉度，正=内容顺时针倾斜）、`correction_angle`（`rotate` 入参；OpenCV 正角为视觉逆时针，横排与检测角同号、竖排反号）、`confidence`（证据不足严格为 0，不装成确定结论）、`tiles`（4×4 网格中每个文字块的方向、角度、离散度、组件数、是否采信）、`ruled_lines`（表格线/插图边框/粗下划线，已从正文角度中排除）、`groups`（横/竖排聚合证据）、`notes`（中文说明）。
+
+`POST /pages/{id}/process` 的 `deskew` 参数：`region`（同上）、`mode`、`apply`（布尔，默认 true）。证据不足、已水平或 `apply=false` 时不重写图像、不重采样，历史仍记录完整分析依据（`metadata.applied=false`），因此连续纠偏不会越转越歪。旋转一律扩展画布，不裁切原先可见的页边内容；预览、框选区域、缩略图与导出都对应同一次实际变换。
+
 ```json
 POST /pages/{id}/process
 {"operation":"perspective","params":{"points":[[10,20],[1300,20],[1300,1800],[10,1800]]}}

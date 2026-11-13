@@ -12,7 +12,8 @@ from .core import ROOT, DomainError, Store, choice, require, string
 from .demo import seed
 from .documents import Documents
 from .exports import Exporter
-from .imaging import detect_edges, read_image, skew_angle
+from .imaging import detect_edges, read_image
+from .skew import analyze_skew
 from .tasks import Scheduler
 
 
@@ -191,7 +192,16 @@ def create_app(data_root=None, demo=True):
     @app.get('/api/pages/<identifier>/skew')
     def skew(identifier):
         page = store.get('pages', identifier)
-        return jsonify(skew_angle(read_image(store.resolve(page['current']))))
+        region = None
+        raw_region = request.args.get('region')
+        if raw_region:
+            try:
+                region = [int(part) for part in raw_region.split(',')]
+            except ValueError:
+                raise DomainError('区域参数需为 x,y,宽,高 四个整数')
+            require(len(region) == 4, '区域参数需为 x,y,宽,高 四个整数')
+        mode = request.args.get('mode', 'auto')
+        return jsonify(analyze_skew(read_image(store.resolve(page['current'])), region=region, mode=mode))
 
     @app.post('/api/pages/<identifier>/process')
     def process(identifier):

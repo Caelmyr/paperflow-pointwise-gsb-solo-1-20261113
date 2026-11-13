@@ -56,6 +56,17 @@ class Enumeration(Parameter):
         return result
 
 
+class Boolean(Parameter):
+    def validate(self, value, field):
+        require(isinstance(value, bool), field + '必须是布尔值')
+        return value
+
+    def describe(self):
+        result = super().describe()
+        result['type'] = 'boolean'
+        return result
+
+
 class Region(Parameter):
     def validate(self, value, field):
         if value is None and not self.required:
@@ -126,7 +137,11 @@ def build_registry():
     registry['rotate'] = Operation('旋转', 'geometry', {
         'angle': Numeric(-360, 360, 90),
     })
-    registry['deskew'] = Operation('倾斜校正', 'geometry', {})
+    registry['deskew'] = Operation('倾斜校正', 'geometry', {
+        'region': Region(),
+        'mode': Enumeration(('auto', 'horizontal', 'vertical'), 'auto'),
+        'apply': Boolean(default=True),
+    })
     registry['illumination'] = Operation('光照修复', 'background', {
         'strength': Numeric(0, 1, 0.7),
     })

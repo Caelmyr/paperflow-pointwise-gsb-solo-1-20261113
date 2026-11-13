@@ -5,7 +5,7 @@ import queue
 import threading
 import traceback
 
-from .core import DomainError, choice, identity, ids, now, number, require
+from .core import DomainError, choice, identity, ids, now, require
 
 TERMINAL = {'completed', 'partial', 'failed', 'cancelled', 'interrupted'}
 
@@ -113,14 +113,34 @@ class Scheduler:
             with self.store.transaction() as state:
                 state['tasks'][task_id]['current_page'] = page_id
             started_at = now()
+            result = {
+                'page_id': page_id,
+                'status': 'success',
+                'started_at': started_at,
+                'finished_at': None,
+            }
             try:
                 if task['operation'] == 'ocr':
                     self.documents.recognize(page_id, task['params'])
                 elif task['operation'] == 'restore':
                     self.documents.restore(page_id)
                 else:
+                    before = self.store.get('pages', page_id)
                     self.documents.apply(page_id, task['operation'], task['params'])
-                result = {'page_id': page_id, 'status': 'success', 'started_at': started_at, 'finished_at': now()}
+                    after = self.store.get('pages', page_id)
+                    if task['operation'] == 'deskew' and after['history']:
+                        entry = after['history'][-1]
+                        if entry['operation'] == 'deskew':
+                            result['deskew'] = {
+                                'applied': entry['metadata'].get('applied', False),
+                                'status': entry['metadata'].get('status'),
+                                'confidence': entry['metadata'].get('confidence'),
+                                'angle': entry['metadata'].get('correction_angle'),
+                                'orientation': entry['metadata'].get('orientation'),
+                                'revision_before': before['revision'],
+                                'revision_after': after['revision'],
+                            }
+                result.update({'status': 'success', 'started_at': started_at, 'finished_at': now()})
             except Exception as error:
                 result = {
                     'page_id': page_id,

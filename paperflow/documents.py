@@ -165,9 +165,40 @@ class Documents:
             if expected_revision is not None:
                 require(expected_revision == page['revision'], '页面已变化，请刷新后重试', 409, 'revision_conflict')
             from .parameters import validate_operation
+            from .skew import correction_params
             params = validate_operation(operation, params)
-            image = imaging.read_image(self.store.resolve(page['current']))
-            result, metadata = imaging.process(image, operation, params)
+            if operation == 'deskew':
+                # 先纯分析：证据不足、已水平或用户要求保留时不重写图像、不重采样
+                current_image = imaging.read_image(self.store.resolve(page['current']))
+                angle, metadata = correction_params(current_image, params)
+                metadata['applied'] = abs(angle) > 0
+                if not metadata['applied']:
+                    with self.store.transaction() as state:
+                        current = state['pages'].get(page_id)
+                        require(current is not None, '页面已被删除', 409)
+                        require(current['revision'] == page['revision'], '页面版本冲突', 409)
+                        current['history'].append({
+                            'id': identity('history'),
+                            'time': now(),
+                            'operation': operation,
+                            'params': params,
+                            'metadata': metadata,
+                            'before': current['current'],
+                            'after': current['current'],
+                            'before_width': current['width'],
+                            'before_height': current['height'],
+                        })
+                        current['revision'] += 1
+                        current['updated_at'] = now()
+                        self.store.event(state, '倾斜校正（保留原状）', page_id, {
+                            'status': metadata.get('status'),
+                            'confidence': metadata.get('confidence'),
+                        })
+                    return self.store.get('pages', page_id)
+                result = imaging.rotate(current_image, angle)
+            else:
+                image = imaging.read_image(self.store.resolve(page['current']))
+                result, metadata = imaging.process(image, operation, params)
             path = self.store.new_file('processed')
             thumb_path = self.store.new_file('thumbs', '.jpg')
             imaging.save_image(path, result)

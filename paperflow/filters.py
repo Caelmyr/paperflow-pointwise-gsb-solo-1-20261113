@@ -156,20 +156,37 @@ def sauvola(image, params):
 
 
 def remove_lines(image, params):
-    orientation = choice(params.get('orientation', 'both'), '线条方向', ('horizontal', 'vertical', 'both'))
-    length = number(params.get('length', 80), '最短线长', 20, 1000, True)
-    mask = cv2.threshold(gray(image), 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
-    combined = np.zeros(mask.shape, np.uint8)
-    if orientation in ('horizontal', 'both'):
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (length, 1))
-        horizontal = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        combined = cv2.bitwise_or(combined, horizontal)
-    if orientation in ('vertical', 'both'):
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, length))
-        vertical = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        combined = cv2.bitwise_or(combined, vertical)
-    combined = cv2.dilate(combined, np.ones((3, 3), np.uint8))
-    return cv2.inpaint(image, combined, 3, cv2.INPAINT_TELEA)
+    """安全去线：走智能引擎，不刷白、不补造。
+
+    保留旧接口（orientation/length），内部改为先检测再按保守策略执行：
+    无法判断的交叉处保留原像素，彩色/断续/斜线默认不动。
+    需要逐条确认时使用 /api/pages/<id>/line-work 交互式工具。
+    """
+    from .linework import analyze, apply_plan, paper_background
+
+    plan_params = {
+        'orientation': choice(params.get('orientation', 'both'), '线条方向',
+                              ('horizontal', 'vertical', 'both')),
+        'min_length': number(params.get('length', 80), '最短线长', 20, 1000, True),
+        'max_gap': number(params.get('max_gap', 6), '断线桥接间隔', 0, 80, True),
+        'region': params.get('region'),
+    }
+    report = analyze(image, plan_params)
+    plan = {
+        'params': report['params'],
+        'segments': [
+            {'id': s['id'], 'rect': s['rect'], 'orientation': s['orientation'],
+             'decision': 'keep' if s['orientation'] == 'diagonal' or s.get('uncertain') else 'remove'}
+            for s in report['segments']
+        ],
+        'crossings': [
+            {'id': c['id'], 'rect': c['rect'], 'orientation': c['orientation'],
+             'decision': c['decision']}
+            for c in report['crossings']
+        ],
+    }
+    background = paper_background(image)
+    return apply_plan(image, plan, background)[0]
 
 
 def flatten_background(image, params):

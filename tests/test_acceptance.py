@@ -260,3 +260,155 @@ def test_11_line_count_over_5000():
     sys.path.insert(0,str(ROOT/'scripts'))
     from count_lines import report
     assert report()['total'] > 5000
+
+
+def _make_line_work_page(call, client, document_id):
+    """生成含表格线、压字横线、彩色线、虚线与斜线的综合试验页并导入。"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    font_path = ROOT / 'resources' / 'NotoSansCJK-Regular.ttc'
+    canvas = Image.new('RGB', (1200, 1500), '#fffefa')
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.truetype(str(font_path), 40)
+    small = ImageFont.truetype(str(font_path), 30)
+    draw.rectangle((60, 160, 1140, 520), outline='#111111', width=3)
+    for index in range(1, 4):
+        draw.line((60, 160 + index * 90, 1140, 160 + index * 90), fill='#111111', width=3)
+    for index in range(1, 3):
+        draw.line((60 + index * 360, 160, 60 + index * 360, 520), fill='#111111', width=3)
+    # 数字骑在横线上，制造真实文字交叉。
+    draw.text((120, 224), '12345', font=font, fill='#000000')
+    # 彩色细线：默认必须保留，不能统一刷白。
+    draw.line((520, 580, 1120, 580), fill='#c0392b', width=2)
+    # 断续扫描线。
+    for x in range(60, 1140, 40):
+        draw.line((x, 720, x + 24, 720), fill='#222222', width=2)
+    # 斜线：默认保留。
+    draw.line([(120, 840), (420, 1000)], fill='#111111', width=3)
+    # 贴近粗线的细字，检验不糊字。
+    draw.line((60, 1140, 1140, 1140), fill='#000000', width=8)
+    draw.text((700, 1100), '细字贴近粗线', font=small, fill='#1a1a1a')
+    buffer = io.BytesIO()
+    canvas.save(buffer, format='PNG')
+    response = client.post('/api/documents/' + document_id + '/import',
+                           data={'files': (io.BytesIO(buffer.getvalue()), 'line_work_case.png')},
+                           headers=HEADERS)
+    assert response.status_code == 201, response.json
+    return response.json['page_ids'][0]
+
+
+def test_12_line_work_preview_decisions_and_apply(work):
+    app, client, call, collection, document, directory = work
+    page_id = _make_line_work_page(call, client, document['id'])
+    page = call('GET', '/pages/' + page_id)
+
+    # 检测阶段只出报告，不修改图像。
+    report = call('GET', '/pages/' + page_id + '/line-work/analyze?orientation=both&min_length=80')
+    assert report['summary']['segments_total'] >= 8
+    assert any(segment['kind'] == 'table' for segment in report['segments'])
+    assert call('GET', '/pages/' + page_id)['current'] == page['current']
+
+    # 彩色线与断续线默认保留；斜线在显式报告时也默认保留。
+    for segment in report['segments']:
+        if segment.get('colored') or segment.get('broken'):
+            assert segment['decision'] == 'keep' and segment['uncertain']
+    diagonal = call('GET', '/pages/' + page_id
+                    + '/line-work/analyze?orientation=diagonal&include_diagonal=true&min_length=80')
+    assert diagonal['summary']['diagonal_segments'] >= 1
+    assert all(segment['decision'] == 'keep' for segment in diagonal['segments']
+               if segment['orientation'] == 'diagonal')
+
+    # 标注预览返回 PNG。
+    preview = client.get('/api/pages/' + page_id + '/line-work/preview?min_length=80', headers=HEADERS)
+    assert preview.mimetype == 'image/png' and len(preview.data) > 1000
+
+    # 保护一个交叉处并保存；改线长重新检测后人工决策按几何重叠继续成立。
+    crossings = report['crossings']
+    if crossings:
+        target = crossings[0]
+        call('POST', '/pages/' + page_id + '/line-work/decisions', {
+            'segments': [{'id': s['id'], 'rect': s['rect'], 'orientation': s['orientation'],
+                          'decision': s['decision']} for s in report['segments']],
+            'crossings': [{'id': c['id'], 'rect': c['rect'], 'orientation': c['orientation'],
+                           'decision': 'keep' if c['id'] == target['id'] else c['decision']}
+                          for c in crossings],
+        })
+        rechecked = call('GET', '/pages/' + page_id + '/line-work/analyze?min_length=120')
+        match = next((c for c in rechecked['crossings'] if c['id'] == target['id']), None)
+        assert match is not None and match['decision'] == 'keep'
+        assert match.get('decision_source') == 'saved'
+
+    # 效果预览不落盘。
+    plan = {
+        'params': report['params'],
+        'segments': [{'id': s['id'], 'rect': s['rect'], 'orientation': s['orientation'],
+                      'decision': s['decision']} for s in report['segments']],
+        'crossings': [{'id': c['id'], 'rect': c['rect'], 'orientation': c['orientation'],
+                       'decision': c['decision']} for c in report['crossings']],
+    }
+    effect = client.post('/api/pages/' + page_id + '/line-work/plan-preview',
+                         json={'plan': plan}, headers=HEADERS)
+    assert effect.mimetype == 'image/png'
+    assert call('GET', '/pages/' + page_id)['current'] == page['current']
+
+    # 应用确认方案：历史、版本号、OCR 失效状态与持久化决策对应同一方案。
+    updated = call('POST', '/pages/' + page_id + '/line-work/apply',
+                   {'plan': plan, 'revision': page['revision']})
+    assert updated['revision'] == page['revision'] + 1
+    assert updated['history'][-1]['operation'] == 'line_work'
+    assert updated['history'][-1]['metadata']['tool'] == 'line_work'
+    assert updated['line_work']['segments']
+    if updated.get('ocr'):
+        assert updated['ocr']['stale']
+
+    # 旧版本号必须冲突；非法决策必须被拒绝。
+    stale = client.post('/api/pages/' + page_id + '/line-work/apply',
+                        json={'plan': plan, 'revision': page['revision']}, headers=HEADERS)
+    assert stale.status_code == 409
+    invalid = client.post('/api/pages/' + page_id + '/line-work/apply', json={
+        'plan': {'params': plan['params'],
+                 'segments': [{'id': 'x', 'rect': [0, 0, 10, 10],
+                               'orientation': 'diagonal', 'decision': 'invent'}],
+                 'crossings': []}}, headers=HEADERS)
+    assert invalid.status_code == 400
+
+    # 旧的 remove_lines 入口改走同一安全引擎，不再统一刷白。
+    legacy = call('POST', '/pages/' + page_id + '/process',
+                  {'operation': 'remove_lines', 'params': {'orientation': 'both', 'length': 100}})
+    assert legacy['history'][-1]['operation'] == 'remove_lines'
+
+
+def test_13_line_work_region_and_other_pages_untouched(work):
+    app, client, call, collection, document, directory = work
+    page_id = _make_line_work_page(call, client, document['id'])
+    page = call('GET', '/pages/' + page_id)
+    # 局部区域：只处理表格左上角，区域外像素必须原样保留。
+    report = call('GET', '/pages/' + page_id
+                  + '/line-work/analyze?orientation=both&min_length=40&region=50,150,500,200')
+    assert report['segments']
+    plan = {
+        'params': report['params'],
+        'segments': [{'id': s['id'], 'rect': s['rect'], 'orientation': s['orientation'],
+                      'decision': 'remove'} for s in report['segments']],
+        'crossings': [],
+    }
+    import cv2
+    store = app.extensions['store']
+    before = cv2.imread(str(store.resolve(page['current'])))
+    updated = call('POST', '/pages/' + page_id + '/line-work/apply', {'plan': plan})
+    after = cv2.imread(str(store.resolve(updated['current'])))
+    # 区域右侧（区域外）完全一致；区域内发生变化。
+    assert int(np.count_nonzero(cv2.compare(
+        before[150:350, 550:1140], after[150:350, 550:1140], cv2.CMP_NE))) == 0
+    assert int(np.count_nonzero(cv2.compare(
+        before[150:350, 50:550], after[150:350, 50:550], cv2.CMP_NE))) > 0
+
+    # 其他页面不受影响：再导入一页，其 current 引用不随本页操作改变。
+    with (ROOT / 'demo' / 'demo_2.png').open('rb') as handle:
+        response = client.post('/api/documents/' + document['id'] + '/import',
+                               data={'files': (handle, 'demo_2.png')}, headers=HEADERS)
+    other_id = response.json['page_ids'][0]
+    other = call('GET', '/pages/' + other_id)
+    call('GET', '/pages/' + other_id + '/line-work/analyze?min_length=80')
+    assert call('GET', '/pages/' + other_id)['current'] == other['current']
+    call('POST', '/pages/delete', {'page_ids': [other_id]})

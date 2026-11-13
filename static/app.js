@@ -112,3 +112,153 @@ $('reviewMenu').onclick=()=>busy('正在读取复核记录…',async()=>{
 $('loadRecovery').onclick=()=>busy('正在载入恢复练习…',async()=>{const doc=await api('/demo/recovery','POST',{});await refresh();await openDocument(doc.id);toast('真实中断资料已载入，请在任务面板核对后重试');});
 
 async function showStorage(){const info=await api('/audit/storage');modal('存储与清理',`<p class="help-text">当前文件 ${(info.total_bytes/1048576).toFixed(2)} MB。仅清理超过保留期且未被记录引用的文件；原始文件不在清理范围。</p><label>保留小时数<input id="storageAge" type="number" min="1" max="87600" value="24"></label><button id="previewCleanup">预览可清理文件</button><div id="cleanupList"></div><button id="confirmCleanup" disabled>清理选中文件</button><p id="cleanupResult" class="help-text"></p>`);let age=24;let files=[];$('previewCleanup').onclick=()=>busy('正在核对存储引用…',async()=>{age=Number($('storageAge').value);files=await api('/audit/orphans','POST',{minimum_age_hours:age});$('cleanupList').innerHTML=files.length?files.map((f,i)=>`<label><input type="checkbox" data-cleanup-index="${i}" checked>${escapeHtml(f.path)} · ${Math.ceil(f.bytes/1024)} KB</label>`).join(''):'<p>当前没有可清理文件。</p>';$('confirmCleanup').disabled=!files.length;$('cleanupResult').textContent='请确认文件清单；真实删除不可撤销。';});$('confirmCleanup').onclick=()=>busy('正在清理选中文件…',async()=>{const paths=[...document.querySelectorAll('[data-cleanup-index]:checked')].map(e=>files[Number(e.dataset.cleanupIndex)].path);const result=await api('/audit/cleanup','POST',{minimum_age_hours:age,paths});$('cleanupResult').textContent=`已清理 ${result.deleted.length} 个文件，释放 ${(result.bytes_freed/1048576).toFixed(2)} MB。`;$('confirmCleanup').disabled=true;});}
+
+// ---------------------------------------------------------------------------
+// 智能表格线处理：检测预览、逐条/区域确认、交叉处保护、按方案应用
+// ---------------------------------------------------------------------------
+const lineWork = {
+	report:null, plan:null, imageUrl:null, natural:{w:0,h:0},
+	kindNames:{table:'表格线',underline:'下划线',rule:'独立直线',diagonal:'斜线'},
+	riskNames:{low:'低风险（可安全修补）',medium:'中风险',high:'高风险（内容不可推断，默认保留）'},
+	params(){
+		const params={orientation:$('lwOrientation').value,min_length:Number($('lwMinLength').value),max_gap:Number($('lwMaxGap').value),dash_gap:Number($('lwDashGap').value)};
+		if($('lwDiagonal').checked)params.include_diagonal=true;
+		if($('lwUseRegion').checked){
+			if(!state.region){toast('请先在主预览中框选区域，或取消“仅当前框选区域”',true);$('lwUseRegion').checked=false;}
+			else params.region=state.region.join(',');
+		}
+		return params;
+	},
+	async open(){
+		if(!state.page)return toast('请先选择页面',true);
+		$('lineWorkDialog').showModal();
+		// 带上当前页面版本号，避免基于过期图像做决策。
+		this.imageUrl=`/api/pages/${state.page.id}/image?variant=current&r=${state.page.revision}`;
+		$('lwImage').src=this.imageUrl;
+		await this.analyze();
+	},
+	async analyze(){
+		const page=requirePage();
+		this.report=await api(`/pages/${page.id}/line-work/analyze?`+new URLSearchParams(this.params()));
+		// 初始化工作方案：复制检测结果中的决策。
+		this.plan={params:this.report.params,
+			segments:this.report.segments.map(s=>({id:s.id,rect:s.rect,orientation:s.orientation,endpoints:s.endpoints,decision:s.decision})),
+			crossings:this.report.crossings.map(c=>({id:c.id,rect:c.rect,orientation:c.orientation,decision:c.decision}))};
+		this.render();
+	},
+	find(id){
+		return this.plan.segments.find(s=>s.id===id)||this.plan.crossings.find(c=>c.id===id);
+	},
+	toggle(id){
+		const item=this.find(id);
+		if(!item)return;
+		item.decision=item.decision==='remove'?'keep':'remove';
+		this.render();
+	},
+	setAll(decision){
+		for(const s of this.plan.segments)s.decision=decision;
+		for(const c of this.plan.crossings)c.decision=decision;
+		this.render();
+	},
+	setSafeOnly(){
+		// 只自动去除：非彩色、非断续、非斜线，且交叉处可安全修补的项；其余全部保留。
+		for(const s of this.plan.segments){
+			const raw=this.report.segments.find(r=>r.id===s.id);
+			s.decision=(s.orientation!=='diagonal'&&raw&&!raw.uncertain)?'remove':'keep';
+		}
+		for(const c of this.plan.crossings){
+			const raw=this.report.crossings.find(r=>r.id===c.id);
+			c.decision=raw&&raw.repairable?'remove':'keep';
+		}
+		this.render();
+	},
+	render(){
+		const r=this.report;
+		const s=this.plan;
+		const sum=s.segments.reduce((a,x)=>{a[x.decision]=(a[x.decision]||0)+1;return a;},{});
+		const cr=s.crossings.reduce((a,x)=>{a[x.decision]=(a[x.decision]||0)+1;return a;},{});
+		$('lwSummary').innerHTML=`检测到 <b>${r.summary.segments_total}</b> 条线段（去除 ${sum.remove||0} / 保留 ${sum.keep||0}），<b>${r.summary.crossings_total}</b> 处文字交叉（去除 ${cr.remove||0} / 保护 ${cr.keep||0}）；彩色线 ${r.summary.colored_segments}、断续线 ${r.summary.broken_segments}、斜线 ${r.summary.diagonal_segments}，不确定交叉 ${r.summary.crossings_uncertain}。`;
+		this.drawSvg();
+		this.drawList();
+	},
+	drawSvg(){
+		const svg=$('lwSvg');
+		const img=$('lwImage');
+		if(!img.naturalWidth)return;
+		this.natural={w:img.naturalWidth,h:img.naturalHeight};
+		svg.setAttribute('viewBox',`0 0 ${img.naturalWidth} ${img.naturalHeight}`);
+		svg.innerHTML='';
+		const ns='http://www.w3.org/2000/svg';
+		for(const seg of this.plan.segments){
+			const raw=this.report.segments.find(r=>r.id===seg.id);
+			const [x,y,w,h]=seg.rect;
+			const el=document.createElementNS(ns,'rect');
+			el.setAttribute('x',x);el.setAttribute('y',y);el.setAttribute('width',w);el.setAttribute('height',h);
+			el.setAttribute('class',`lw-rect seg-${raw?raw.kind:'rule'} ${seg.decision==='keep'?'kept':''}`);
+			el.appendChild(document.createTitle(`${this.kindNames[raw?raw.kind:'rule']} · ${seg.decision==='remove'?'将去除':'已保留'}${raw&&raw.uncertain?' · 不确定':''}`));
+			el.onclick=()=>this.toggle(seg.id);
+			svg.appendChild(el);
+		}
+		for(const cross of this.plan.crossings){
+			const raw=this.report.crossings.find(r=>r.id===cross.id);
+			const [x,y,w,h]=cross.rect;
+			const el=document.createElementNS(ns,'rect');
+			el.setAttribute('x',x);el.setAttribute('y',y);el.setAttribute('width',w);el.setAttribute('height',h);
+			el.setAttribute('class',`lw-cross-rect ${raw?raw.risk:'high'} ${cross.decision==='keep'?'kept':''}`);
+			el.appendChild(document.createTitle(`文字交叉 · ${this.riskNames[raw?raw.risk:'high']} · ${cross.decision==='remove'?'将修补':'已保护'}`));
+			el.onclick=()=>this.toggle(cross.id);
+			svg.appendChild(el);
+		}
+	},
+	drawList(){
+		const root=$('lwList');
+		const groups=[['segments','线段（点击切换去除/保留）'],['crossings','文字交叉处（点击切换修补/保护）']];
+		root.innerHTML=groups.map(([key,title])=>{
+			const items=this.plan[key];
+			const raws=key==='segments'?this.report.segments:this.report.crossings;
+			const rows=items.map(item=>{
+				const raw=raws.find(r=>r.id===item.id);
+				const label=key==='segments'
+					?`${this.kindNames[raw.kind]} · ${item.orientation==='horizontal'?'横':item.orientation==='vertical'?'纵':'斜'} ${raw.length}px${raw.colored?' · 彩色':''}${raw.broken?' · 断续':''}`
+					:`交叉 ${raw.two_sided?'两侧笔画':'单侧笔画'} · ${this.riskNames[raw.risk]}`;
+				const reason=key==='segments'?raw.kind_reason:raw.reason;
+				const risk=key==='crossings'?`<div class="lw-risk ${raw.risk}">${this.riskNames[raw.risk]}</div>`:'';
+				return `<div class="lw-item ${item.decision==='keep'?'keep':''}" data-lw-id="${item.id}">
+					<div class="lw-item-head"><b>${escapeHtml(label)}</b><span class="lw-badge ${item.decision}">${item.decision==='remove'?(key==='segments'?'将去除':'将修补'):(key==='segments'?'保留':'保护')}</span></div>
+					<small>${escapeHtml(reason)}</small>${risk}</div>`;
+			}).join('');
+			return `<div class="lw-group-title">${title}（${items.length}）</div>${rows||'<p class="hint">无</p>'}`;
+		}).join('');
+		root.querySelectorAll('[data-lw-id]').forEach(el=>el.onclick=()=>this.toggle(el.dataset.lwId));
+	},
+	async previewEffect(){
+		const page=requirePage();
+		// 预览图是 PNG，直接用 fetch 取二进制，不走 JSON 解析。
+		const response=await fetch(`/api/pages/${page.id}/line-work/plan-preview`,{method:'POST',headers:{'X-PaperFlow':'1','Content-Type':'application/json'},body:JSON.stringify({plan:this.plan})});
+		if(!response.ok)throw Error((await response.json()).error||'预览失败');
+		const url=URL.createObjectURL(await response.blob());
+		modal('去线效果预览（尚未保存，确认后才写入）',`<img src="${url}" style="max-width:100%"><p class="hint">这是按当前方案模拟的结果；关闭后可继续调整每条线段与交叉处的决策。</p>`);
+	},
+	async saveDecisions(){
+		const page=requirePage();
+		await api(`/pages/${page.id}/line-work/decisions`,'POST',{segments:this.plan.segments,crossings:this.plan.crossings});
+		toast('人工决策已保存；调整线宽或方向后仍按几何位置自动匹配');
+	},
+	async apply(){
+		const page=requirePage();
+		const payload={plan:this.plan,revision:page.revision};
+		const updated=await api(`/pages/${page.id}/line-work/apply`,'POST',payload);
+		$('lineWorkDialog').close();
+		await reloadCurrent();
+		toast(`去线方案已应用（版本 ${updated.revision}），历史与识别状态已同步`);
+	},
+};
+$('lineWorkButton').onclick=()=>busy('正在检测表格线与交叉处…',()=>lineWork.open());
+$('lineWorkClose').onclick=()=>$('lineWorkDialog').close();
+$('lwAnalyze').onclick=()=>busy('正在重新检测…',()=>lineWork.analyze());
+$('lwKeepAll').onclick=()=>lineWork.setAll('keep');
+$('lwRemoveSafe').onclick=()=>lineWork.setSafeOnly();
+$('lwPreviewEffect').onclick=()=>busy('正在渲染去线效果…',()=>lineWork.previewEffect());
+$('lwSaveDecisions').onclick=()=>busy('正在保存人工决策…',()=>lineWork.saveDecisions());
+$('lwApply').onclick=()=>busy('正在按确认方案改图…',()=>lineWork.apply());
+$('lwImage').onload=()=>lineWork.report&&lineWork.drawSvg();

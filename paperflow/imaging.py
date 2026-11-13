@@ -308,6 +308,9 @@ def process(image, operation, params):
         result = illumination(image, params.get('strength', 0.6))
         result = color_mode(result, params.get('mode', 'adaptive'), params.get('threshold', 160), params.get('block_size', 35), params.get('constant', 12))
         result, metadata = denoise(result, params.get('area', 3), params.get('median', 1))
+    elif operation == 'line_work':
+        from .linework import apply_plan, paper_background
+        result, metadata = apply_plan(image, params.get('plan'), paper_background(image))
     else:
         from .filters import apply_filter
         result, metadata = apply_filter(image, operation, params)

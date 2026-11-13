@@ -26,7 +26,8 @@
 <div class="tool-section"><h3><span>01</span> 纸张与方向</h3><div class="row"><button id="detectEdges">⌗ 检测边缘</button><button id="applyPerspective">透视校正</button></div><p class="hint">检测后可在预览图中拖动四个角点。</p><div class="row"><button id="rotateLeft">↶ 左转</button><button id="rotateRight">↷ 右转</button><button id="deskew">自动纠偏</button></div></div>
 <div class="tool-section"><h3><span>02</span> 光照与背景</h3><label>阴影修复 <output id="strengthValue">70%</output><input type="range" id="strength" min="0" max="100" value="70"></label><button class="full" id="illumination">修复光照与背景</button></div>
 <div class="tool-section"><h3><span>03</span> 扫描色彩</h3><div class="mode-grid"><button data-mode="color">◉ 彩色</button><button data-mode="gray">◐ 灰度</button><button data-mode="binary">◑ 黑白</button><button class="active" data-mode="adaptive">▥ 自适应</button></div><label>全局阈值 <output id="thresholdValue">160</output><input type="range" id="threshold" min="0" max="255" value="160"></label><div class="field-row"><label>窗口<input id="blockSize" type="number" min="3" max="201" step="2" value="35"></label><label>常量<input id="constant" type="number" min="-50" max="50" value="12"></label></div><button class="full" id="applyColor">应用色彩模式</button></div>
-<div class="tool-section"><h3><span>04</span> 清理与区域</h3><div class="field-row"><label>污点面积<input id="noiseArea" type="number" min="0" max="100" value="8"></label><label>滤波窗口<select id="median"><option>1</option><option selected>3</option><option>5</option><option>7</option><option>9</option></select></label></div><button id="selectRegion" class="full">▱ 框选区域</button><div class="row"><button id="denoise">清理污点</button><button id="cropRegion">裁切</button><button id="extractRegion">提取</button></div><p class="hint">未框选时清理整页；提取区域可单独下载。</p><div id="regions"></div></div><button id="restoreOriginal" class="full subtle">↺ 恢复原图</button>
+<div class="tool-section"><h3><span>04</span> 清理与区域</h3><div class="field-row"><label>污点面积<input id="noiseArea" type="number" min="0" max="100" value="8"></label><label>滤波窗口<select id="median"><option>1</option><option selected>3</option><option>5</option><option>7</option><option>9</option></select></label></div><button id="selectRegion" class="full">▱ 框选区域</button><div class="row"><button id="denoise">清理污点</button><button id="cropRegion">裁切</button><button id="extractRegion">提取</button></div><p class="hint">未框选时清理整页；提取区域可单独下载。</p><div id="regions"></div></div>
+<div class="tool-section"><h3><span>05</span> 表格线与下划线</h3><button class="full" id="lineWorkButton">▤ 智能去线（预览确认）</button><p class="hint">先预览线段与交叉处风险，按区域逐条确认；无法判断的内容保持原样，不补造数字。</p></div><button id="restoreOriginal" class="full subtle">↺ 恢复原图</button>
 </div>
 <div id="ocrPanel" class="tool-panel hidden"><div class="tool-section"><h3>本地 OCR 文字识别</h3><label>识别语言<select id="ocrLanguage"><option value="chi_sim+eng">简体中文 + English</option><option value="chi_sim">简体中文</option><option value="eng">English</option></select></label><label>版面模式<select id="ocrPsm"><option value="3">自动分析版面</option><option value="6">单一文本块</option><option value="11">稀疏文字</option></select></label><button id="runOcr" class="primary full">✦ 开始文字识别</button><p id="ocrStatus" class="hint">识别在本机完成，无需网络。</p></div><div class="tool-section"><div class="row"><h3>识别结果</h3><button id="saveOcr">保存校订</button></div><textarea id="ocrText" placeholder="识别结果将在这里显示，可直接修改。" rows="18"></textarea><p class="hint">点击图中文字框可修改单词；文本校订将保留到 TXT 与 PDF 文字层中。</p><div id="wordEditor"></div></div></div>
 <div id="historyPanel" class="tool-panel hidden"><h3>页面处理历史</h3><div id="history"></div><button class="full" id="eventsButton">查看工作区操作日志</button></div>
@@ -35,6 +36,45 @@
 </main></div>
 <input type="file" id="fileInput" accept="image/png,image/jpeg,image/tiff,image/bmp,image/webp,application/pdf" multiple hidden>
 <dialog id="modal"><div class="modal-heading"><h2 id="modalTitle"></h2><button id="closeModal">✕</button></div><div id="modalContent"></div></dialog>
+<dialog id="lineWorkDialog" class="line-dialog">
+<div class="modal-heading"><h2>智能表格线处理</h2><button id="lineWorkClose">✕</button></div>
+<div class="line-work">
+<div class="line-controls">
+<div class="field-row">
+<label>方向<select id="lwOrientation"><option value="both">横向+纵向</option><option value="horizontal">仅横向</option><option value="vertical">仅纵向</option><option value="diagonal">仅斜线</option></select></label>
+<label>最短线长<input id="lwMinLength" type="number" min="20" max="4000" value="80"></label>
+<label>实线桥接<input id="lwMaxGap" type="number" min="0" max="80" value="6"></label>
+<label>断续桥接<input id="lwDashGap" type="number" min="0" max="120" value="24"></label>
+</div>
+<div class="row lw-toggle-row">
+<label class="lw-check"><input type="checkbox" id="lwDiagonal"> 同时报告斜线</label>
+<label class="lw-check"><input type="checkbox" id="lwUseRegion"> 仅当前框选区域</label>
+<button id="lwAnalyze">重新检测</button>
+<button id="lwKeepAll">全部保留</button>
+<button id="lwRemoveSafe">仅去安全项</button>
+</div>
+<p class="hint" id="lwSummary">尚未检测。</p>
+</div>
+<div class="line-body">
+<div class="line-stage" id="lwStage">
+<div class="lw-svg-host" id="lwHost"><img id="lwImage" alt="去线预览底图"><svg id="lwSvg" preserveAspectRatio="none"></svg></div>
+<div class="lw-legend">
+<span><i class="lg-table"></i>表格线</span><span><i class="lg-under"></i>下划线</span><span><i class="lg-rule"></i>独立直线</span><span><i class="lg-diag"></i>斜线</span>
+<span><i class="lg-keep"></i>人工保护</span><span><i class="lg-low"></i>低风险</span><span><i class="lg-high"></i>不确定/高风险</span>
+</div>
+</div>
+<div class="line-list" id="lwList"></div>
+</div>
+<div class="line-footer">
+<p class="hint" id="lwHint">点击图中线段或右侧条目切换「去除/保留」；品红框为已保护的交叉处。不确定项默认保留。</p>
+<div class="row">
+<button id="lwPreviewEffect">预览去线效果</button>
+<button id="lwSaveDecisions">仅保存决策</button>
+<button class="primary" id="lwApply">确认并应用</button>
+</div>
+</div>
+</div>
+</dialog>
 <div id="toast" role="status"></div><div id="busy" class="hidden"><div class="spinner"></div><span id="busyText">正在处理…</span></div>
 <script src="/static/app.js"></script>
 </body></html>

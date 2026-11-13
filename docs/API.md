@@ -78,6 +78,17 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 
 `POST /pages/{id}/regions` 参数name、kind（text/illustration/other）、region。返回区域id，下载 `GET /pages/{id}/regions/{region_id}`。`POST /pages/{id}/restore` 参数空对象恢复原图，或传history_id恢复该版本。`GET /pages/{id}` 返回完整图像与OCR历史。
 
+## 智能表格线处理
+
+去线遵循“先检测预览、人工确认、再改图”，检测接口绝不写像素。线段分为 table（表格线）、underline（下划线）、rule（独立直线）、diagonal（斜线）四类；彩色线、断续扫描线与斜线默认 `keep` 并标记 `uncertain`，不做统一刷白。交叉处按风险返回 low/medium/high：仅单侧笔画或线宽接近笔画宽度时无法推断被遮住的内容，默认保护原像素，不补造数字。
+
+- `GET /pages/{id}/line-work/analyze`：查询参数 orientation（horizontal/vertical/both/diagonal）、min_length、max_gap（实线小断裂桥接）、dash_gap（断续线桥接）、include_diagonal、region（`x,y,宽,高`）。返回 segments、crossings、summary；页面保存过的人工决策按几何重叠自动匹配，带 `decision_source=saved`。
+- `GET /pages/{id}/line-work/preview`：同参数，返回带颜色标注的 PNG 预览（线段按类别着色，交叉处按风险着色，品红虚线框为人工保护项）。
+- `POST /pages/{id}/line-work/plan-preview`：body 为完整方案 `{params,segments,crossings}`，返回按该方案模拟的去线效果 PNG，不落盘。
+- `POST /pages/{id}/line-work/decisions`：只保存人工 remove/keep 决策（不改图）。调整线宽、方向参数后决策仍按几何位置成立。
+- `POST /pages/{id}/line-work/apply`：body `{plan,revision}`，按确认方案改图。revision 过期返回409；结果通过标准 `line_work` 历史条目落盘，OCR 自动标记 stale，方案随页面 `line_work` 字段持久化。区域方案只改区域内像素，区域外逐像素不变。
+- 旧入口 `remove_lines`（`POST /pages/{id}/process`）保留，内部改走同一安全引擎，彩色/断续/斜线与不确定交叉默认保留。
+
 `POST /documents/{id}/checkpoints` 保存name命名快照；`GET /documents/{id}/checkpoints` 列表；`GET /checkpoints/{id}/diff` 差异；`POST /checkpoints/{id}/restore` 恢复为新文档（可选name、collection_id）。
 
 ## 其他服务
@@ -157,6 +168,11 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 | GET | `/api/pages/<page_id>/analysis` |
 | GET | `/api/pages/<page_id>/comparison` |
 | GET | `/api/pages/<page_id>/layout` |
+| GET | `/api/pages/<page_id>/line-work/analyze` |
+| GET | `/api/pages/<page_id>/line-work/preview` |
+| POST | `/api/pages/<page_id>/line-work/plan-preview` |
+| POST | `/api/pages/<page_id>/line-work/decisions` |
+| POST | `/api/pages/<page_id>/line-work/apply` |
 | GET | `/api/pages/<page_id>/low-confidence` |
 | POST | `/api/pages/<page_id>/notes` |
 | PATCH | `/api/pages/<page_id>/notes/<note_id>` |

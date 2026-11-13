@@ -208,9 +208,14 @@ def build_registry():
         'window': Numeric(3, 201, 41, integer=True, odd=True),
         'k': Numeric(0.01, 0.8, 0.2),
     })
-    registry['remove_lines'] = Operation('清除表格线', 'cleanup', {
+    registry['remove_lines'] = Operation('安全去线（保守自动）', 'cleanup', {
         'orientation': Enumeration(('horizontal', 'vertical', 'both'), 'both'),
         'length': Numeric(20, 1000, 80, integer=True),
+        'max_gap': Numeric(0, 80, 6, integer=True),
+        'region': Region(),
+    })
+    registry['line_work'] = Operation('智能表格线处理（按确认方案）', 'cleanup', {
+        'plan': Parameter(required=True),
     })
     registry['flatten_background'] = Operation('背景归一化', 'background', {
         'radius': Numeric(7, 151, 35, integer=True, odd=True),

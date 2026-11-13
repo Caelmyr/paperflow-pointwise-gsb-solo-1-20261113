@@ -7,7 +7,7 @@
     },
     {
       "file": "paperflow/advanced.py",
-      "effective_lines": 282
+      "effective_lines": 312
     },
     {
       "file": "paperflow/analysis.py",
@@ -51,11 +51,11 @@
     },
     {
       "file": "paperflow/filters.py",
-      "effective_lines": 183
+      "effective_lines": 193
     },
     {
       "file": "paperflow/imaging.py",
-      "effective_lines": 277
+      "effective_lines": 280
     },
     {
       "file": "paperflow/interchange.py",
@@ -66,12 +66,20 @@
       "effective_lines": 207
     },
     {
+      "file": "paperflow/linework.py",
+      "effective_lines": 664
+    },
+    {
+      "file": "paperflow/linework_service.py",
+      "effective_lines": 98
+    },
+    {
       "file": "paperflow/ocr.py",
       "effective_lines": 166
     },
     {
       "file": "paperflow/parameters.py",
-      "effective_lines": 209
+      "effective_lines": 214
     },
     {
       "file": "paperflow/pipelines.py",
@@ -110,6 +118,6 @@
       "effective_lines": 34
     }
   ],
-  "total": 5065,
+  "total": 5875,
   "passes_5000": true
 }

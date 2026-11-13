@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, Response, jsonify, request, send_file
 
 from . import analysis, layout
 from .archive import Archives
@@ -9,6 +9,7 @@ from .catalog import Catalog
 from .core import DomainError, require
 from .imaging import read_image
 from .interchange import Interchange
+from .linework_service import LineTool
 from .parameters import operation_catalog
 from .pipelines import Pipelines
 from .preferences import Preferences
@@ -26,7 +27,8 @@ def register_advanced(app, store, documents, exporter):
     preferences = Preferences(store)
     reports = Reports(store, auditor, review)
     interchange = Interchange(store, exporter)
-    app.extensions.update(archives=archives, auditor=auditor, catalog=catalog, review=review, pipelines=pipelines, preferences=preferences, reports=reports, interchange=interchange)
+    line_tool = LineTool(store, documents)
+    app.extensions.update(archives=archives, auditor=auditor, catalog=catalog, review=review, pipelines=pipelines, preferences=preferences, reports=reports, interchange=interchange, line_tool=line_tool)
 
     def body():
         values = request.get_json(silent=True)
@@ -358,5 +360,39 @@ def register_advanced(app, store, documents, exporter):
     @routes.get('/documents/<document_id>/export-history')
     def document_export_history(document_id):
         return jsonify(preflight.export_history(document_id))
+
+    # ---- 智能表格线处理 ----------------------------------------------------
+    @routes.get('/pages/<page_id>/line-work/analyze')
+    def line_work_analyze(page_id):
+        store.get('pages', page_id)
+        return jsonify(line_tool.analyze(page_id, request.args.to_dict(flat=True)))
+
+    @routes.get('/pages/<page_id>/line-work/preview')
+    def line_work_preview(page_id):
+        store.get('pages', page_id)
+        payload, report = line_tool.preview(page_id, request.args.to_dict(flat=True))
+        response = Response(payload, mimetype='image/png')
+        response.headers['Cache-Control'] = 'no-store'
+        response.headers['X-Line-Summary'] = str(report['summary'])
+        return response
+
+    @routes.post('/pages/<page_id>/line-work/plan-preview')
+    def line_work_plan_preview(page_id):
+        store.get('pages', page_id)
+        payload, metadata = line_tool.render_plan_preview(page_id, body())
+        response = Response(payload, mimetype='image/png')
+        response.headers['Cache-Control'] = 'no-store'
+        response.headers['X-Changed-Pixels'] = str(metadata['pixels_changed'])
+        return response
+
+    @routes.post('/pages/<page_id>/line-work/decisions')
+    def line_work_decisions(page_id):
+        store.get('pages', page_id)
+        return jsonify(line_tool.save_decisions(page_id, body()))
+
+    @routes.post('/pages/<page_id>/line-work/apply')
+    def line_work_apply(page_id):
+        values = body()
+        return jsonify(line_tool.apply(page_id, values, values.get('revision')))
 
     app.register_blueprint(routes)

@@ -185,6 +185,19 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 | GET | `/api/review/queue` |
 | GET | `/api/review/settings` |
 | PATCH | `/api/review/settings` |
+| GET | `/api/seal/params` |
+| GET | `/api/seal/projects` |
+| POST | `/api/seal/projects` |
+| GET | `/api/seal/projects/<project_id>` |
+| DELETE | `/api/seal/projects/<project_id>` |
+| POST | `/api/seal/projects/<project_id>/extract` |
+| POST | `/api/seal/projects/<project_id>/edit` |
+| POST | `/api/seal/projects/<project_id>/activate` |
+| POST | `/api/seal/projects/<project_id>/background` |
+| GET | `/api/seal/projects/<project_id>/composed` |
+| POST | `/api/seal/projects/<project_id>/export` |
+| GET | `/api/seal/projects/<project_id>/versions/<version_id>/asset/<kind>` |
+| GET | `/api/seal/exports/<export_id>/download` |
 | GET | `/api/search` |
 | GET | `/api/session` |
 | PUT | `/api/session` |
@@ -199,3 +212,34 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 | GET | `/api/workspace` |
 
 页面的“恢复练习”使用 POST /api/demo/recovery 载入从真实中断服务保存的练习资料；不是自动验收脚本。页面书签和复核入口对应已有目录与审核接口。
+
+## 印章 / 批注分离工作区
+
+用于把红章、彩色批注从黑字正文与纸底中分离，全程只读页面 `current` 图像，不修改正文、原稿或其他已提取素材；产物独立存放在工作区 `seal_projects` 与 `seals/` 目录，state 中只保存文件相对路径与标量，像素数组不进入 JSON。
+
+像素三态：`keep`（保留，mask 灰度 255）、`review`（待确认，128）、`exclude`（排除，0）。自动提取只给建议——红章与黑字重叠、照片无法判定归属的像素一律标为 `review`，系统不凭空补内容或吞并黑字；浅印泥以较低软 alpha 保留而非被阈值吃掉。
+
+```sh
+# 1) 基于某页创建工作区
+curl -X POST http://127.0.0.1:8888/api/seal/projects -H 'X-PaperFlow: 1' \
+  -H 'Content-Type: application/json' -d '{"page_id":"page_xxx","name":"合同章"}'
+# 2) 自动提出可保留部分（origin=auto 初提 / reextract 换参数重算）
+curl -X POST .../api/seal/projects/<id>/extract -H 'X-PaperFlow: 1' \
+  -H 'Content-Type: application/json' \
+  -d '{"origin":"auto","params":{"preset":"red","hue_span":18,"saturation_min":45,"value_min":70,"overlap_gap":28,"min_component":12}}'
+# 3) 人工补选/排除/改待确认（矩形 rect 或画笔 points），人工决定优先于自动
+curl -X POST .../api/seal/projects/<id>/edit -H 'X-PaperFlow: 1' \
+  -H 'Content-Type: application/json' \
+  -d '{"target":"keep","geometry":{"type":"rect","rect":[12,12,36,36]}}'
+# 4) 换参数重算会生成新版本并保留此前人工决定；可 activate 退回任意旧版本
+# 5) 导出与预览一致的透明 PNG（默认不纳入未解决的待确认像素）
+curl -X POST .../api/seal/projects/<id>/export -H 'X-PaperFlow: 1' \
+  -H 'Content-Type: application/json' -d '{"crop":true,"include_review":false}'
+```
+
+- `GET /api/seal/params` 返回各参数类型、范围与默认值；`preset` 支持 red / vermilion / blue / black。
+- `GET .../versions/<version_id>/asset/<kind>` 的 kind 为 mask / preview / rgba，均为 PNG。
+- `GET .../composed?background=white|dark|checker|paper` 返回按纸底合成的预览，与最终导出共用同一条 alpha 合成链路，保证透明图边缘和预览一致。
+- 导出记录保存来源页 `page_id`、页码 `page_number`、`source_image`、页面版本 `source_revision`、`source_sha256`、提取版本 `version_id` 与参数 `version_params`，以及导出时仍未解决的待确认像素数 `unresolved_review_at_export`。
+- 换参数重算（`origin=reextract`）只覆盖未被人工触碰的像素；`touched` 记录人工改动位置，人工决定在新版本中原样保留。
+

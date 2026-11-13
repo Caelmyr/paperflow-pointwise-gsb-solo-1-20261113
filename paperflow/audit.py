@@ -39,6 +39,13 @@ class Auditor:
                         references[entry[field]].append({'kind': 'checkpoint', 'id': checkpoint['id']})
                 for region in page.get('regions', []):
                     references[region['path']].append({'kind': 'checkpoint', 'id': checkpoint['id']})
+        for project in state.get('seal_projects', {}).values():
+            for version in project.get('versions', {}).values():
+                for field in ('mask_path', 'touched_path', 'rgba_path', 'preview_path'):
+                    if version.get(field):
+                        references[version[field]].append({'kind': 'seal_version', 'id': version['id']})
+            for export in project.get('exports', []):
+                references[export['path']].append({'kind': 'seal_export', 'id': export['id']})
         return references
 
     def integrity(self, deep=False):
@@ -112,8 +119,10 @@ class Auditor:
         categories = {}
         total_bytes = 0
         total_files = 0
-        for category in ('sources', 'originals', 'processed', 'thumbs', 'regions', 'exports', 'incoming'):
+        for category in ('sources', 'originals', 'processed', 'thumbs', 'regions', 'exports', 'incoming', 'seals'):
             directory = self.store.root / category
+            if not directory.is_dir():
+                continue
             files = 0
             size = 0
             unreferenced = 0

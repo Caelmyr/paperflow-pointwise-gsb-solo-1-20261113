@@ -239,6 +239,13 @@ class Archives:
                         files.update((entry['before'], entry['after']))
                     for region in page.get('regions', []):
                         files.add(region['path'])
+            for project in snapshot.get('seal_projects', {}).values():
+                for version in project.get('versions', {}).values():
+                    for field in ('mask_path', 'touched_path', 'rgba_path', 'preview_path'):
+                        if version.get(field):
+                            files.add(version[field])
+                for export in project.get('exports', []):
+                    files.add(export['path'])
             manifest = {}
             with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr('workspace.json', json.dumps(snapshot, ensure_ascii=False, indent=2))

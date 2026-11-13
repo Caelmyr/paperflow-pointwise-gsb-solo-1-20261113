@@ -359,4 +359,83 @@ def register_advanced(app, store, documents, exporter):
     def document_export_history(document_id):
         return jsonify(preflight.export_history(document_id))
 
+    from .seals import SealWorkbench
+    seal_workbench = SealWorkbench(store)
+    app.extensions['seal_workbench'] = seal_workbench
+
+    @routes.get('/seal/projects')
+    def seal_project_list():
+        return jsonify(seal_workbench.list_projects(
+            request.args.get('document_id'), request.args.get('page_id')))
+
+    @routes.post('/seal/projects')
+    def seal_project_create():
+        value = body()
+        page_id = value.get('page_id')
+        require(isinstance(page_id, str) and page_id, '需要来源页面 page_id')
+        return jsonify(seal_workbench.create_project(page_id, value)), 201
+
+    @routes.get('/seal/projects/<project_id>')
+    def seal_project_detail(project_id):
+        return jsonify(seal_workbench.detail(project_id))
+
+    @routes.delete('/seal/projects/<project_id>')
+    def seal_project_delete(project_id):
+        return jsonify(seal_workbench.delete_project(project_id))
+
+    @routes.post('/seal/projects/<project_id>/extract')
+    def seal_extract(project_id):
+        value = body()
+        origin = value.get('origin', 'auto')
+        require(origin in ('auto', 'reextract'), '提取来源无效')
+        return jsonify(seal_workbench.extract(project_id, value.get('params', {}), origin))
+
+    @routes.post('/seal/projects/<project_id>/edit')
+    def seal_edit(project_id):
+        return jsonify(seal_workbench.edit(project_id, body()))
+
+    @routes.post('/seal/projects/<project_id>/activate')
+    def seal_activate(project_id):
+        value = body()
+        require(isinstance(value.get('version_id'), str) and value['version_id'], '需要 version_id')
+        return jsonify(seal_workbench.activate_version(project_id, value['version_id']))
+
+    @routes.post('/seal/projects/<project_id>/background')
+    def seal_background(project_id):
+        value = body()
+        return jsonify(seal_workbench.set_background(project_id, value.get('background')))
+
+    @routes.get('/seal/projects/<project_id>/versions/<version_id>/asset/<kind>')
+    def seal_asset(project_id, version_id, kind):
+        require(kind in ('mask', 'preview', 'rgba'), '资源类型无效')
+        path = seal_workbench.asset_response_path(project_id, version_id, kind)
+        return send_file(path, mimetype='image/png')
+
+    @routes.get('/seal/projects/<project_id>/composed')
+    def seal_composed(project_id):
+        data, background = seal_workbench.composed_preview(project_id, request.args.get('background'))
+        from flask import Response
+        return Response(data, mimetype='image/png',
+                        headers={'Cache-Control': 'no-store', 'X-Seal-Background': background})
+
+    @routes.post('/seal/projects/<project_id>/export')
+    def seal_export(project_id):
+        return jsonify(seal_workbench.export_png(project_id, body())), 201
+
+    @routes.get('/seal/exports/<export_id>/download')
+    def seal_export_download(export_id):
+        record = None
+        for project in store.snapshot().get('seal_projects', {}).values():
+            record = next((item for item in project['exports'] if item['id'] == export_id), None)
+            if record:
+                break
+        require(record is not None, '导出记录不存在', 404)
+        return send_file(store.resolve(record['path']), mimetype=record['mime'],
+                         as_attachment=True, download_name=record['filename'])
+
+    @routes.get('/seal/params')
+    def seal_params():
+        from .seal_imaging import describe_params
+        return jsonify(describe_params())
+
     app.register_blueprint(routes)

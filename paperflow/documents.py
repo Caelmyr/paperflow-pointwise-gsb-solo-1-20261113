@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import copy
-import io
-import shutil
 import threading
 from pathlib import Path
 
 import cv2
 import fitz
 import numpy as np
-from PIL import Image, ImageOps
 
-from . import imaging, ocr
+from . import color, imaging, ocr
 from .core import DomainError, digest, identity, ids, now, number, require, string
 
 MAX_FILE_BYTES = 60 * 1024 * 1024
@@ -22,6 +19,7 @@ ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.webp',
 class Documents:
     def __init__(self, store):
         self.store = store
+        self.colors = color.ColorManager(store)
         self.locks = {}
         self.guard = threading.Lock()
 
@@ -35,26 +33,65 @@ class Documents:
         document['pages'] = [state['pages'][page_id] for page_id in document['page_ids']]
         return document
 
-    def add_image(self, document_id, image, name, source=None, position=None):
+    def add_image(self, document_id, image, name, source=None, position=None, kind='generated', reason=None):
+        """Add a page whose pixels are already sRGB working data."""
         imaging.validate_image(image)
         self.store.get('documents', document_id)
-        original_path = self.store.new_file('originals')
+        original_path = self.store.new_file('originals', '.png')
         thumb_path = self.store.new_file('thumbs', '.jpg')
-        imaging.save_image(original_path, image)
+        imaging.save_image(original_path, image, color.SRGB_PROFILE)
         imaging.thumbnail(thumb_path, image)
+        record = color.rule_based_record(self.colors, kind, reason)
+        return self._insert_page(document_id, image, name, source, position,
+                                 original_path, original_path, thumb_path, record)
+
+    def add_source(self, document_id, source_image, name, source=None, position=None, kind='image'):
+        """Add a page from a decoded source frame, preserving native colour."""
+        working = source_image.working_bgr
+        imaging.validate_image(working)
+        self.store.get('documents', document_id)
+        original_path = self.store.new_file('originals', '.png')
+        thumb_path = self.store.new_file('thumbs', '.jpg')
+        imaging.save_image(original_path, working, color.SRGB_PROFILE)
+        imaging.thumbnail(thumb_path, working)
+        native_path = self._store_native(source_image)
+        record = color.build_record(source_image, self.colors, kind)
+        return self._insert_page(document_id, working, name, source, position,
+                                 original_path, native_path, thumb_path, record)
+
+    def _store_native(self, source_image):
+        """Persist the decoded source frame in its own colour space."""
+        family = (source_image.report.get('source_family') or 'RGB')
+        extension = '.tif' if family in ('CMYK', 'LAB') else '.png'
+        path = self.store.new_file('originals', extension)
+        try:
+            color.save_image_file(path, source_image.native, source_image.profile_bytes)
+        except DomainError:
+            # Damaged profile bytes cannot be embedded; keep the untouched mode.
+            fallback = self.store.new_file('originals', '.tif')
+            color.save_image_file(fallback, source_image.native, None, 'TIFF')
+            path.unlink(missing_ok=True)
+            path = fallback
+        return path
+
+    def _insert_page(self, document_id, working, name, source, position, original_path, native_path, thumb_path, record):
         page_id = identity('page')
         original = self.store.relative(original_path)
-        record = {
+        native = self.store.relative(native_path)
+        record['original_native'] = False
+        record['events'] = record.get('events', [])
+        page_record = {
             'id': page_id,
             'document_id': document_id,
             'name': string(name, '页面名称', 200),
             'original': original,
+            'native': native,
             'current': original,
             'thumbnail': self.store.relative(thumb_path),
             'source': source,
             'sha256': digest(original_path),
-            'width': image.shape[1],
-            'height': image.shape[0],
+            'width': working.shape[1],
+            'height': working.shape[0],
             'revision': 0,
             'created_at': now(),
             'updated_at': now(),
@@ -62,13 +99,15 @@ class Documents:
             'ocr_versions': [],
             'history': [],
             'regions': [],
-            'quality': imaging.quality(image),
+            'quality': imaging.quality(working),
+            'color': record,
+            'original_color': copy.deepcopy(record),
         }
         try:
             with self.store.transaction() as state:
                 document = state['documents'].get(document_id)
                 require(document is not None, '导入期间目标文档被删除', 409)
-                state['pages'][page_id] = record
+                state['pages'][page_id] = page_record
                 if position is None:
                     document['page_ids'].append(page_id)
                 else:
@@ -78,6 +117,8 @@ class Documents:
                 self.store.event(state, '导入页面', page_id, {'name': name})
         except Exception:
             original_path.unlink(missing_ok=True)
+            if native_path != original_path:
+                native_path.unlink(missing_ok=True)
             thumb_path.unlink(missing_ok=True)
             raise
         return self.store.get('pages', page_id)
@@ -130,31 +171,37 @@ class Documents:
                     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                     source = {'name': name, 'type': 'pdf', 'page': index + 1}
                     insertion = None if position is None else position + len(imported)
-                    record = self.add_image(document_id, image, f'{Path(name).stem} · {index + 1}', source, insertion)
+                    record = self.add_image(
+                        document_id, image, f'{Path(name).stem} · {index + 1}', source, insertion,
+                        kind='pdf_page',
+                        reason='PDF 页面是渲染合成结果：屏幕预览与处理按 sRGB 工作空间，原始 PDF 文件完整保留，交付不另行声明原色域。',
+                    )
                     imported.append(record['id'])
                     sources.attach(retained['id'], [record['id']])
             finally:
                 pdf.close()
         elif path.suffix.lower() in ('.tif', '.tiff'):
             try:
-                with Image.open(path) as tiff:
-                    require(tiff.n_frames <= MAX_IMPORT_PAGES, 'TIFF 最多200帧')
-                    for frame in range(tiff.n_frames):
-                        if cancelled and cancelled():
-                            break
-                        tiff.seek(frame)
-                        require(tiff.width * tiff.height <= imaging.MAX_PIXELS, 'TIFF 页面过大')
-                        rgb = np.asarray(ImageOps.exif_transpose(tiff).convert('RGB'))
-                        image = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-                        insertion = None if position is None else position + len(imported)
-                        record = self.add_image(document_id, image, f'{Path(name).stem} · {frame + 1}', {'name': name, 'type': 'tiff', 'page': frame + 1}, insertion)
-                        imported.append(record['id'])
-                        sources.attach(retained['id'], [record['id']])
+                frames = color.read_native_frames(path)
+                require(len(frames) <= MAX_IMPORT_PAGES, 'TIFF 最多200帧')
+                for frame_index, (frame, profile_bytes) in enumerate(frames):
+                    if cancelled and cancelled():
+                        break
+                    source_image = imaging.SourceImage(frame, profile_bytes)
+                    insertion = None if position is None else position + len(imported)
+                    record = self.add_source(
+                        document_id, source_image, f'{Path(name).stem} · {frame_index + 1}',
+                        {'name': name, 'type': 'tiff', 'page': frame_index + 1}, insertion, kind='tiff',
+                    )
+                    imported.append(record['id'])
+                    sources.attach(retained['id'], [record['id']])
+            except DomainError:
+                raise
             except (OSError, ValueError) as error:
                 raise DomainError('TIFF 读取失败：' + str(error)) from error
         else:
-            image = imaging.read_image(path)
-            record = self.add_image(document_id, image, Path(name).stem, {'name': name, 'type': 'image'}, position)
+            source_image = imaging.load_source(path)
+            record = self.add_source(document_id, source_image, Path(name).stem, {'name': name, 'type': 'image'}, position)
             imported.append(record['id'])
             sources.attach(retained['id'], [record['id']])
         return imported
@@ -170,12 +217,13 @@ class Documents:
             result, metadata = imaging.process(image, operation, params)
             path = self.store.new_file('processed')
             thumb_path = self.store.new_file('thumbs', '.jpg')
-            imaging.save_image(path, result)
+            imaging.save_image(path, result, color.SRGB_PROFILE)
             imaging.thumbnail(thumb_path, result)
             with self.store.transaction() as state:
                 current = state['pages'].get(page_id)
                 require(current is not None, '页面已被删除', 409)
                 require(current['revision'] == page['revision'], '页面版本冲突', 409)
+                color_record = self._update_colors(current, operation, params)
                 current['history'].append({
                     'id': identity('history'),
                     'time': now(),
@@ -186,6 +234,7 @@ class Documents:
                     'after': self.store.relative(path),
                     'before_width': current['width'],
                     'before_height': current['height'],
+                    'color': copy.deepcopy(color_record),
                 })
                 current['current'] = self.store.relative(path)
                 current['thumbnail'] = self.store.relative(thumb_path)
@@ -198,6 +247,73 @@ class Documents:
                     current['ocr']['stale'] = True
                 self.store.event(state, '图像处理', page_id, {'operation': operation})
             return self.store.get('pages', page_id)
+
+    MONOCHROME_OPERATIONS = {
+        'sauvola': 'Sauvola 二值化',
+        'morph_text': '文字形态处理',
+        'flatten_background': '背景归一化',
+    }
+
+    def _update_colors(self, page, operation, params):
+        """Keep the page colour record consistent with the operation just run."""
+        record = copy.deepcopy(page.get('color') or self.colors.ensure_page(page))
+        record['events'] = record.get('events', [])[-19:]
+        monochrome_mode = None
+        if operation == 'color' and params.get('mode') in ('gray', 'binary', 'adaptive'):
+            monochrome_mode = params.get('mode')
+        elif operation == 'enhance' and params.get('mode') in ('gray', 'binary', 'adaptive'):
+            monochrome_mode = params.get('mode')
+        elif operation in self.MONOCHROME_OPERATIONS:
+            monochrome_mode = operation
+        if monochrome_mode and not record.get('monochrome', {}).get('converted'):
+            source_profile = (record.get('source') or {}).get('profile')
+            label = {'gray': '灰度', 'binary': '黑白', 'adaptive': '自适应黑白'}.get(monochrome_mode,
+                    self.MONOCHROME_OPERATIONS.get(monochrome_mode, '单色'))
+            record['monochrome'] = {
+                'converted': True,
+                'mode': monochrome_mode,
+                'time': now(),
+                'original_profile': source_profile,
+                'reason': '主动转为' + label + '，此页原有色彩信息不再存在于当前像素。',
+            }
+            record['losses'].append({
+                'kind': 'monochrome',
+                'message': '主动单色化（' + label + '）：当前页像素已无原色彩；处理历史保留转换前的 sRGB 结果，原件保留可回看。',
+                'time': now(),
+                'mode': monochrome_mode,
+            })
+            record['events'].append({'time': now(), 'action': '转为单色', 'mode': monochrome_mode})
+        record['delivery'] = color.delivery_plan(record, edited=True)
+        page['color'] = record
+        return record
+
+    def color_info(self, page):
+        """User-facing colour facts for one page: source, working, delivery."""
+        record = page.get('color')
+        if not isinstance(record, dict) or record.get('schema') != 1:
+            record = self.colors.record_from_file(page, page.get('original') or page.get('current'))
+        edited = page.get('original') != page.get('current')
+        plan = color.delivery_plan(record, edited=edited)
+        source = record.get('source') or {}
+        return {
+            'page_id': page['id'],
+            'working_space': color.WORKING_SPACE,
+            'source': {
+                'kind': source.get('kind'),
+                'mode': source.get('mode'),
+                'family': source.get('family'),
+                'profile': source.get('profile'),
+                'assumption': source.get('assumption'),
+                'fallback': source.get('fallback'),
+                'displayable': source.get('displayable'),
+                'monochrome': source.get('monochrome'),
+                'warnings': source.get('warnings', []),
+            },
+            'delivery': plan,
+            'monochrome': record.get('monochrome') or {'converted': False},
+            'losses': record.get('losses', []),
+            'edited': edited,
+        }
 
     def restore(self, page_id, history_id=None):
         with self.page_lock(page_id):
@@ -213,6 +329,10 @@ class Documents:
             imaging.thumbnail(thumb_path, image)
             with self.store.transaction() as state:
                 current = state['pages'][page_id]
+                if history_id:
+                    restored_color = copy.deepcopy(entries[0].get('color') or current.get('color'))
+                else:
+                    restored_color = copy.deepcopy(current.get('original_color') or current.get('color'))
                 current['history'].append({
                     'id': identity('history'),
                     'time': now(),
@@ -223,6 +343,7 @@ class Documents:
                     'after': target,
                     'before_width': current['width'],
                     'before_height': current['height'],
+                    'color': copy.deepcopy(restored_color),
                 })
                 current['current'] = target
                 current['thumbnail'] = self.store.relative(thumb_path)
@@ -231,6 +352,10 @@ class Documents:
                 current['quality'] = imaging.quality(image)
                 current['revision'] += 1
                 current['updated_at'] = now()
+                if restored_color:
+                    restored_color['events'] = restored_color.get('events', [])[-19:]
+                    restored_color['delivery'] = color.delivery_plan(restored_color, edited=history_id is not None)
+                    current['color'] = restored_color
                 if current['ocr']:
                     current['ocr']['stale'] = True
                 self.store.event(state, '恢复图像', page_id)
@@ -400,7 +525,7 @@ class Documents:
             image = imaging.read_image(self.store.resolve(page['current']))
             x, y, w, h = imaging.rectangle(values.get('region'), image)
             path = self.store.new_file('regions')
-            imaging.save_image(path, image[y:y + h, x:x + w])
+            imaging.save_image(path, image[y:y + h, x:x + w], color.SRGB_PROFILE)
             record = {
                 'id': identity('region'),
                 'name': string(values.get('name', '提取区域'), '区域名称', 100),

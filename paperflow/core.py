@@ -94,7 +94,7 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.path = self.root / 'workspace.json'
-        for directory in ('originals', 'processed', 'thumbs', 'exports', 'regions', 'incoming'):
+        for directory in ('originals', 'processed', 'thumbs', 'exports', 'regions', 'incoming', 'profiles'):
             (self.root / directory).mkdir(exist_ok=True)
         if not self.path.exists():
             atomic_json(self.path, {
@@ -141,6 +141,8 @@ class Store:
             require(page['id'] in state['documents'][page['document_id']]['page_ids'], '孤立页面', 500)
             for key in ('original', 'current', 'thumbnail'):
                 self.resolve(page[key])
+            if page.get('native'):
+                self.resolve(page['native'])
 
     def resolve(self, relative):
         require(isinstance(relative, str), '文件引用无效')

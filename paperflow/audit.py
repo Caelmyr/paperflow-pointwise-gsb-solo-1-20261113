@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from .core import digest, now, number, require
+from . import color
 from .imaging import read_image
 
 
@@ -19,6 +20,10 @@ class Auditor:
         for page in state['pages'].values():
             for field in ('original', 'current', 'thumbnail'):
                 references[page[field]].append({'kind': 'page', 'id': page['id'], 'field': field})
+            if page.get('native'):
+                references[page['native']].append({'kind': 'page', 'id': page['id'], 'field': 'native'})
+            for profile in color.profile_paths(page.get('color')):
+                references[profile].append({'kind': 'page', 'id': page['id'], 'field': 'colour_profile'})
             for entry in page.get('history', []):
                 for field in ('before', 'after'):
                     references[entry[field]].append({'kind': 'history', 'id': page['id'], 'field': field})
@@ -34,6 +39,10 @@ class Auditor:
             for page in checkpoint['pages'].values():
                 for field in ('original', 'current', 'thumbnail'):
                     references[page[field]].append({'kind': 'checkpoint', 'id': checkpoint['id']})
+                if page.get('native'):
+                    references[page['native']].append({'kind': 'checkpoint', 'id': checkpoint['id']})
+                for profile in color.profile_paths(page.get('color')):
+                    references[profile].append({'kind': 'checkpoint', 'id': checkpoint['id']})
                 for entry in page.get('history', []):
                     for field in ('before', 'after'):
                         references[entry[field]].append({'kind': 'checkpoint', 'id': checkpoint['id']})
@@ -112,7 +121,7 @@ class Auditor:
         categories = {}
         total_bytes = 0
         total_files = 0
-        for category in ('sources', 'originals', 'processed', 'thumbs', 'regions', 'exports', 'incoming'):
+        for category in ('sources', 'originals', 'processed', 'thumbs', 'regions', 'profiles', 'exports', 'incoming'):
             directory = self.store.root / category
             files = 0
             size = 0

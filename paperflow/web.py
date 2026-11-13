@@ -7,7 +7,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException
 
-from . import ocr
+from . import color, ocr
 from .core import ROOT, DomainError, Store, choice, require, string
 from .demo import seed
 from .documents import Documents
@@ -180,8 +180,24 @@ def create_app(data_root=None, demo=True):
     @app.get('/api/pages/<identifier>/image')
     def page_image(identifier):
         page = store.get('pages', identifier)
-        variant = choice(request.args.get('variant', 'current'), '图像版本', ('current', 'original', 'thumbnail'))
-        return send_file(store.resolve(page[variant]), conditional=True)
+        variant = choice(request.args.get('variant', 'current'), '图像版本', ('current', 'original', 'thumbnail', 'native'))
+        target = page.get(variant)
+        require(target is not None, '此页面没有该图像版本', 404)
+        return send_file(store.resolve(target), conditional=True)
+
+    @app.get('/api/pages/<identifier>/color')
+    def page_color(identifier):
+        page = store.get('pages', identifier)
+        return jsonify(documents.color_info(page))
+
+    @app.get('/api/documents/<identifier>/color')
+    def document_color(identifier):
+        document = documents.document(identifier)
+        return jsonify({
+            'document_id': identifier,
+            'working_space': color.WORKING_SPACE,
+            'pages': [documents.color_info(page) for page in document['pages']],
+        })
 
     @app.get('/api/pages/<identifier>/edges')
     def edges(identifier):

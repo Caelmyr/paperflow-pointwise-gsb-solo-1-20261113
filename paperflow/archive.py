@@ -8,6 +8,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from .core import DomainError, atomic_json, digest, identity, now, require, string
+from . import color
 from .imaging import read_image, thumbnail, validate_image
 
 MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
@@ -77,6 +78,14 @@ def validate_document_metadata(metadata, members):
             relative = safe_member(page.get(field))
             require(relative in members, '归档缺少图像：' + relative)
             paths.add(relative)
+        if page.get('native'):
+            relative = safe_member(page['native'])
+            require(relative in members, '归档缺少原色副本：' + relative)
+            paths.add(relative)
+        for profile in color.profile_paths(page.get('color')):
+            relative = safe_member(profile)
+            require(relative in members, '归档缺少色彩描述：' + relative)
+            paths.add(relative)
         history = page.get('history', [])
         require(isinstance(history, list) and len(history) <= 2000, '处理历史无效')
         for entry in history:
@@ -145,6 +154,8 @@ class Archives:
                             category = 'sources'
                             from .documents import ALLOWED_EXTENSIONS
                             require(extracted.suffix.lower() in ALLOWED_EXTENSIONS, '源文件格式无效')
+                        elif relative.startswith('profiles/'):
+                            category = 'profiles'
                         else:
                             image = read_image(extracted)
                             validate_image(image)
@@ -154,6 +165,8 @@ class Archives:
                             category = 'regions'
                         elif relative.startswith('thumbs/'):
                             category = 'thumbs'
+                        elif relative.startswith('profiles/'):
+                            category = 'profiles'
                         destination = self.store.new_file(category, Path(relative).suffix.lower())
                         shutil.copyfile(extracted, destination)
                         created_files.append(destination)
@@ -169,6 +182,20 @@ class Archives:
                     imported_sources[source['id']] = source
                 page_mapping = {}
                 imported_pages = {}
+                def remap_profile(record):
+                    if not isinstance(record, dict):
+                        return record
+                    for section in ('source', 'working', 'delivery'):
+                        info = record.get(section)
+                        if isinstance(info, dict):
+                            profile = info.get('profile')
+                            if isinstance(profile, dict) and profile.get('path') in staged:
+                                profile['path'] = staged[profile['path']]
+                    for loss in record.get('losses', []):
+                        profile = loss.get('profile')
+                        if isinstance(profile, dict) and profile.get('path') in staged:
+                            profile['path'] = staged[profile['path']]
+                    return record
                 for source in metadata['pages']:
                     page = copy.deepcopy(source)
                     old_id = page['id']
@@ -182,6 +209,10 @@ class Archives:
                     page['original'] = staged[page['original']]
                     page['current'] = staged[page['current']]
                     page['thumbnail'] = staged[page['thumbnail']]
+                    if page.get('native'):
+                        page['native'] = staged[page['native']]
+                    remap_profile(page.get('color'))
+                    remap_profile(page.get('original_color'))
                     page['created_at'] = now()
                     page['updated_at'] = now()
                     original_image = read_image(self.store.resolve(page['current']))
@@ -192,6 +223,7 @@ class Archives:
                         entry['id'] = identity('history')
                         entry['before'] = staged[entry['before']]
                         entry['after'] = staged[entry['after']]
+                        remap_profile(entry.get('color'))
                     for region in page.get('regions', []):
                         region['id'] = identity('region')
                         region['path'] = staged[region['path']]
@@ -226,6 +258,10 @@ class Archives:
             files = set()
             for page in snapshot['pages'].values():
                 files.update((page['original'], page['current'], page['thumbnail']))
+                if page.get('native'):
+                    files.add(page['native'])
+                for profile in color.profile_paths(page.get('color')):
+                    files.add(profile)
                 for history in page['history']:
                     files.update((history['before'], history['after']))
                 for region in page.get('regions', []):
@@ -235,6 +271,10 @@ class Archives:
             for checkpoint in snapshot.get('checkpoints', {}).values():
                 for page in checkpoint['pages'].values():
                     files.update((page['original'], page['current'], page['thumbnail']))
+                    if page.get('native'):
+                        files.add(page['native'])
+                    for profile in color.profile_paths(page.get('color')):
+                        files.add(profile)
                     for entry in page['history']:
                         files.update((entry['before'], entry['after']))
                     for region in page.get('regions', []):

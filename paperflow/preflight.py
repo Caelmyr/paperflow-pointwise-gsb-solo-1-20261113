@@ -4,11 +4,11 @@ import io
 import json
 import re
 import zipfile
-from pathlib import Path
 
 import fitz
 from PIL import Image
 
+from . import color
 from .core import digest, now, require
 
 
@@ -30,6 +30,8 @@ class Preflight:
                 path = self.store.resolve(page[field])
                 if not path.is_file():
                     issues.append({'code': 'missing_file', 'message': field + '文件缺失'})
+            if page.get('native') and not self.store.resolve(page['native']).is_file():
+                issues.append({'code': 'missing_native', 'message': '原色副本缺失，交付将改用 sRGB 工作结果'})
             if kind == 'searchable_pdf':
                 result = page.get('ocr')
                 if not result:
@@ -38,6 +40,12 @@ class Preflight:
                     issues.append({'code': 'stale_ocr', 'message': '识别结果与图像版本不一致'})
                 elif not result['text'].strip():
                     issues.append({'code': 'empty_text', 'message': '识别文本为空，此页不会有可检索内容', 'warning': True})
+            record = self.exporter.color_record(page)
+            plan = self.exporter.color_plan(page)[1]
+            for loss in record.get('losses', []):
+                issues.append({'code': 'colour_loss', 'message': loss.get('message'), 'warning': True})
+            for warning in plan.get('warnings', []):
+                issues.append({'code': 'colour_basis', 'message': warning, 'warning': True})
             current = self.store.resolve(page['current'])
             if current.is_file():
                 try:
@@ -51,6 +59,11 @@ class Preflight:
                 'page_id': page['id'],
                 'number': index + 1,
                 'issues': issues,
+                'color': {
+                    'source': record.get('source', {}).get('profile') or record.get('source', {}).get('assumption'),
+                    'working': color.WORKING_SPACE,
+                    'delivery': plan,
+                },
                 'ready': not any(not issue.get('warning') for issue in issues),
             })
         return {
@@ -58,6 +71,7 @@ class Preflight:
             'kind': kind,
             'checked_at': now(),
             'page_count': len(pages),
+            'working_space': color.WORKING_SPACE,
             'ready': all(check['ready'] for check in checks),
             'pages': checks,
         }
@@ -81,6 +95,8 @@ class Preflight:
             details = self.text(path, record, state, errors, warnings)
         else:
             details = {'format': record['kind'], 'bytes': path.stat().st_size}
+        if record.get('color'):
+            details['color'] = record['color']
         return {
             'export_id': export_id,
             'kind': record['kind'],
@@ -115,6 +131,15 @@ class Preflight:
                     'images': image_count,
                     'copiable_characters': len(text),
                 }
+                if image_count:
+                    try:
+                        info = pdf_page.get_image_info()[0]
+                        item['image_colorspace'] = info.get('cs-name')
+                        item['profile_embedded'] = str(info.get('cs-name', '')).startswith('ICCBased')
+                    except (IndexError, ValueError):
+                        pass
+                    if not item.get('profile_embedded') and str(item.get('image_colorspace', '')).lower() != 'lab':
+                        warnings.append(f'第{index + 1}页图像未嵌入 ICC 描述')
                 if record['kind'] == 'searchable_pdf' and source and source.get('ocr'):
                     expected = normalize_text(source['ocr']['text'])
                     actual = normalize_text(text)
@@ -170,15 +195,41 @@ class Preflight:
                             with Image.open(io.BytesIO(archive.read(page['current']))) as image:
                                 image.verify()
                 else:
-                    if len(names) != len(record['page_ids']):
+                    image_names = [name for name in names if name != 'colour-report.json']
+                    colour = {}
+                    if 'colour-report.json' in names:
+                        colour = json.loads(archive.read('colour-report.json'))
+                        details['colour_pages'] = len(colour.get('pages', []))
+                    for item in colour.get('pages', []):
+                        if item.get('native_file'):
+                            image_names = [name for name in image_names if name != item['native_file']]
+                            details.setdefault('native_files', []).append(item['native_file'])
+                    if len(image_names) != len(record['page_ids']):
                         errors.append('图片 ZIP 文件数与页数不一致')
                     expected_prefixes = [f'{index + 1:04d}_' for index in range(len(record['page_ids']))]
-                    for prefix, name in zip(expected_prefixes, names):
+                    for prefix, name in zip(expected_prefixes, image_names):
                         if not name.startswith(prefix):
                             errors.append('图片 ZIP 命名页序不连续')
                         with Image.open(io.BytesIO(archive.read(name))) as image:
                             image.verify()
-                    details['ordered_names'] = names
+                        profile_info = None
+                        try:
+                            with Image.open(io.BytesIO(archive.read(name))) as image:
+                                embedded = image.info.get('icc_profile')
+                                if embedded:
+                                    profile_info = color.inspect_profile(embedded)
+                        except (OSError, ValueError):
+                            pass
+                        if not profile_info:
+                            warnings.append('图片缺少 ICC 描述：' + name)
+                        elif not profile_info.get('valid'):
+                            warnings.append('图片 ICC 描述损坏：' + name)
+                    for native_name in details.get('native_files', []):
+                        with Image.open(io.BytesIO(archive.read(native_name))) as native:
+                            embedded = native.info.get('icc_profile')
+                            if not embedded:
+                                warnings.append('原色域副本缺少 ICC 描述：' + native_name)
+                    details['ordered_names'] = image_names
         except (zipfile.BadZipFile, OSError, ValueError) as error:
             errors.append('压缩包校验失败：' + str(error))
         return details

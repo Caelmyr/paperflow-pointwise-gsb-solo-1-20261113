@@ -59,6 +59,13 @@ class Reports:
                 'review': page.get('review'),
                 'issues': issues,
                 'fields': extract_fields(result),
+                'color': {
+                    'source': (page.get('color') or {}).get('source'),
+                    'working_space': 'sRGB',
+                    'delivery': (page.get('color') or {}).get('delivery'),
+                    'monochrome': (page.get('color') or {}).get('monochrome'),
+                    'losses': [loss.get('message') for loss in (page.get('color') or {}).get('losses', [])],
+                },
             })
         return {
             'generated_at': now(),

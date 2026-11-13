@@ -174,15 +174,29 @@ def export_markdown(document, pages):
     return '\n'.join(parts).encode('utf-8')
 
 
-def export_multipage_tiff(store, pages):
+def export_multipage_tiff(store, pages, exporter=None):
+    """Write each page with its own delivery colour basis and ICC profile.
+
+    A multipage TIFF can carry one ICC profile per frame, so mixed documents
+    keep every page's colour meaning instead of coercing everything to RGB.
+    """
     images = []
+    profiles = []
     output = io.BytesIO()
     try:
         for page in pages:
-            with Image.open(store.resolve(page['current'])) as source:
-                images.append(source.convert('RGB').copy())
+            if exporter is not None:
+                image, profile_bytes, _ = exporter.delivery(page, 'tiff')
+                images.append(image.convert(image.mode).copy() if image.mode in ('RGB', 'L', 'CMYK', 'LAB') else image.convert('RGB').copy())
+            else:
+                with Image.open(store.resolve(page['current'])) as source:
+                    image = source.convert('RGB').copy()
+                    profile_bytes = source.info.get('icc_profile')
+                    images.append(image)
+            profiles.append(profile_bytes)
         require(bool(images), '没有可导出页面')
-        images[0].save(output, format='TIFF', save_all=True, append_images=images[1:], compression='tiff_lzw')
+        images[0].save(output, format='TIFF', save_all=True, append_images=images[1:],
+                       compression='tiff_lzw', icc_profile=profiles[0])
         return output.getvalue()
     finally:
         for image in images:
@@ -204,7 +218,7 @@ class Interchange:
             'markdown': (export_markdown, '.md', 'text/markdown'),
         }
         if kind == 'tiff':
-            data = export_multipage_tiff(self.store, pages)
+            data = export_multipage_tiff(self.store, pages, self.exporter)
             suffix = '.tiff'
             mime = 'image/tiff'
         else:

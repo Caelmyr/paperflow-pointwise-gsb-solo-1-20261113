@@ -1,20 +1,53 @@
 from __future__ import annotations
 
 import math
-import os
 import warnings
-from pathlib import Path
 
 import cv2
 import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from . import color
 from .core import DomainError, choice, number, require
 
 MAX_PIXELS = 36_000_000
 MIN_SIDE = 32
 MAX_SIDE = 16000
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+
+
+class SourceImage:
+    """In-memory view of one imported frame.
+
+    ``native`` is the decoded source frame in its own colour mode (CMYK, Lab,
+    RGB or grayscale) and ``working`` is always the sRGB BGR image used by
+    every screen review and processing step.  ``record`` keeps the colour
+    facts needed to explain and later deliver the source faithfully.
+    """
+
+    def __init__(self, native, profile_bytes):
+        self.working, self.report = color.native_to_working(native, profile_bytes)
+        self.native = native
+        self.profile_bytes = profile_bytes
+        self.working_bgr = validate_image(color.pil_to_bgr(self.working))
+        self.record = self._record()
+
+    def _record(self):
+        report = self.report
+        return {
+            'source_mode': report.get('source_mode'),
+            'source_family': report.get('source_family'),
+            'profile': report.get('profile'),
+            'fallback': report.get('fallback'),
+            'assumption': report.get('assumption'),
+            'warnings': list(report.get('warnings', [])),
+        }
+
+
+def load_source(path):
+    """Decode one image file into a SourceImage without flattening colour facts."""
+    native, profile_bytes = color.read_native(path)
+    return SourceImage(native, profile_bytes)
 
 
 def validate_image(image):
@@ -25,13 +58,25 @@ def validate_image(image):
 
 
 def read_image(path):
+    """Read any stored page image as sRGB BGR working pixels.
+
+    Stored processed images are already sRGB.  Legacy originals may still be
+    CMYK/Lab files; those are converted through their retained profile so the
+    processing input never disagrees with what the preview showed.
+    """
     try:
         with warnings.catch_warnings():
             warnings.simplefilter('error', Image.DecompressionBombWarning)
             with Image.open(path) as original:
                 require(original.format in ('PNG', 'JPEG', 'TIFF', 'BMP', 'WEBP'), '不支持此图片格式')
                 require(original.width * original.height <= MAX_PIXELS, '图片像素过大')
+                profile_bytes = original.info.get('icc_profile')
+                if profile_bytes is None and hasattr(original, 'tag_v2'):
+                    profile_bytes = original.tag_v2.get(34675)
                 normalized = ImageOps.exif_transpose(original)
+                if profile_bytes:
+                    converted, _ = color.native_to_working(color.flatten_alpha(normalized).copy(), profile_bytes)
+                    return validate_image(color.pil_to_bgr(converted))
                 if 'A' in normalized.getbands():
                     background = Image.new('RGB', normalized.size, 'white')
                     background.paste(normalized, mask=normalized.getchannel('A'))
@@ -45,28 +90,18 @@ def read_image(path):
         raise DomainError('图片损坏或格式不支持：' + str(error)) from error
 
 
-def save_image(path, image):
+def save_image(path, image, profile_bytes=None):
     validate_image(image)
-    success, encoded = cv2.imencode('.png', image)
-    require(success, '图像编码失败', 500)
-    temporary = Path(str(path) + '.tmp')
-    try:
-        with temporary.open('wb') as handle:
-            handle.write(encoded.tobytes())
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    if profile_bytes is None:
+        profile_bytes = color.SRGB_PROFILE
+    color.save_image_file(path, color.bgr_to_pil(image), profile_bytes, 'PNG')
 
 
-def thumbnail(path, image, size=240):
+def thumbnail(path, image):
     height, width = image.shape[:2]
-    ratio = min(size / width, size / height, 1)
+    ratio = min(240 / width, 240 / height, 1)
     small = cv2.resize(image, None, fx=ratio, fy=ratio, interpolation=cv2.INTER_AREA)
-    success, encoded = cv2.imencode('.jpg', small, [cv2.IMWRITE_JPEG_QUALITY, 86])
-    require(success, '缩略图生成失败', 500)
-    Path(path).write_bytes(encoded.tobytes())
+    color.save_image_file(path, color.bgr_to_pil(small), color.SRGB_PROFILE, 'JPEG')
 
 
 def gray(image):
@@ -298,6 +333,8 @@ def process(image, operation, params):
         result = illumination(image, params.get('strength', 0.7))
     elif operation == 'color':
         result = color_mode(image, params.get('mode', 'gray'), params.get('threshold', 160), params.get('block_size', 35), params.get('constant', 12))
+        metadata = {'color_basis': 'sRGB working space', 'mode': params.get('mode', 'gray'),
+                    'monochrome': params.get('mode', 'gray') in ('gray', 'binary', 'adaptive')}
     elif operation == 'denoise':
         result, metadata = denoise(image, params.get('area', 8), params.get('median', 3), params.get('region'))
     elif operation == 'crop':
@@ -308,6 +345,8 @@ def process(image, operation, params):
         result = illumination(image, params.get('strength', 0.6))
         result = color_mode(result, params.get('mode', 'adaptive'), params.get('threshold', 160), params.get('block_size', 35), params.get('constant', 12))
         result, metadata = denoise(result, params.get('area', 3), params.get('median', 1))
+        metadata.update({'color_basis': 'sRGB working space', 'mode': params.get('mode', 'adaptive'),
+                         'monochrome': params.get('mode', 'adaptive') in ('gray', 'binary', 'adaptive')})
     else:
         from .filters import apply_filter
         result, metadata = apply_filter(image, operation, params)

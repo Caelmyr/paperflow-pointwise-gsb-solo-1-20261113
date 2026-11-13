@@ -10,7 +10,7 @@ from pathlib import Path
 import fitz
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageCms
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -260,3 +260,198 @@ def test_11_line_count_over_5000():
     sys.path.insert(0,str(ROOT/'scripts'))
     from count_lines import report
     assert report()['total'] > 5000
+
+
+COLOR_FIXTURES = {
+    'screen_reference.png': ('RGB', 'srgb'),
+    'wide_gamut.png': ('RGB', 'adobe_rgb'),
+    'lab_scan.tiff': ('LAB', 'lab'),
+    'print_scan.tiff': ('CMYK', 'swop'),
+}
+
+
+def colour_work(tmp_path_factory):
+    """Separate workspace so colour imports never disturb the shared fixture."""
+    directory = tmp_path_factory.mktemp('paperflow-colour')
+    app = create_app(directory, demo=False)
+    client = app.test_client()
+    def call(method, path, values=None):
+        response = client.open('/api' + path, method=method, json=values, headers=HEADERS)
+        assert response.status_code < 400, (path, response.status_code, response.json)
+        return response.json
+    collection = call('POST', '/collections', {'name': '色彩验收', 'category': '测试'})
+    document = call('POST', '/documents', {'collection_id': collection['id'], 'name': '色彩验收文档'})
+    for name in COLOR_FIXTURES:
+        source = ROOT / 'demo' / 'practice' / 'color_management' / name
+        with source.open('rb') as handle:
+            response = client.post('/api/documents/' + document['id'] + '/import', data={'files': (io.BytesIO(handle.read()), name)}, headers=HEADERS)
+        assert response.status_code == 201, (name, response.json)
+    document = call('GET', '/documents/' + document['id'])
+    return app, client, call, collection, document, directory
+
+
+def test_12_colour_source_records_are_recognized(tmp_path_factory):
+    app, client, call, collection, document, directory = colour_work(tmp_path_factory)
+    try:
+        pages = document['pages']
+        assert len(pages) == len(COLOR_FIXTURES)
+        for page in pages:
+            info = call('GET', '/pages/' + page['id'] + '/color')
+            assert info['working_space'] == 'sRGB'
+            name = next(name for name in COLOR_FIXTURES if name.startswith(page['name'].split(' · ')[0]))
+            family, recognized = COLOR_FIXTURES[name]
+            profile = info['source']['profile']
+            assert profile['valid'] and profile['family'] == family
+            assert profile['recognized'] == recognized
+            assert profile['path'] and app.extensions['store'].resolve(profile['path']).is_file()
+            assert info['source']['displayable'] == (recognized == 'srgb')
+            assert app.extensions['store'].resolve(page['native']).is_file()
+            image = client.get('/api/pages/' + page['id'] + '/image?variant=native')
+            assert image.status_code == 200
+            with Image.open(io.BytesIO(image.data)) as native:
+                assert native.mode == {'RGB': 'RGB', 'CMYK': 'CMYK', 'LAB': 'LAB'}[family]
+                assert native.info.get('icc_profile')
+        assert pages[2]['name'].startswith('lab_scan') and pages[3]['name'].startswith('print_scan')
+    finally:
+        app.extensions['scheduler'].shutdown()
+        app.extensions['pipelines'].executor.shutdown()
+
+
+def test_13_preview_and_delivery_agree_on_colour(tmp_path_factory):
+    app, client, call, collection, document, directory = colour_work(tmp_path_factory)
+    try:
+        # Thumbnail, main preview and original view all come from sRGB working data.
+        for page in document['pages']:
+            for variant in ('current', 'original', 'thumbnail'):
+                response = client.get('/api/pages/' + page['id'] + '/image?variant=' + variant)
+                assert response.status_code == 200
+                with Image.open(io.BytesIO(response.data)) as image:
+                    profile = image.info.get('icc_profile')
+                    description = ImageCms.getProfileDescription(ImageCms.ImageCmsProfile(io.BytesIO(profile)))
+                    assert 'sRGB' in description
+        # Image ZIP preserves CMYK/Lab/Adobe RGB periods per file with a colour report.
+        result = call('POST', '/documents/' + document['id'] + '/export',
+                      {'kind': 'images', 'options': {'image_format': 'tiff'}})
+        payload = client.get('/api/exports/' + result['id'] + '/download')
+        archive = zipfile.ZipFile(io.BytesIO(payload.data))
+        report = json.loads(archive.read('colour-report.json'))
+        assert report['working_space'] == 'sRGB'
+        assert len(report['pages']) == 4
+        modes = {}
+        for item in report['pages']:
+            assert item['mode'] == 'preserve'
+            assert item['delivery_family'] in ('RGB', 'LAB', 'CMYK')
+            with Image.open(io.BytesIO(archive.read(item['file']))) as delivered:
+                embedded = ImageCms.getProfileDescription(
+                    ImageCms.ImageCmsProfile(io.BytesIO(delivered.info['icc_profile'])))
+                modes[item['file']] = delivered.mode
+                assert item['profile']['description'] in embedded or delivered.mode != 'RGB'
+        assert modes['0003_lab_scan · 1.tiff'] == 'LAB'
+        assert modes['0004_print_scan · 1.tiff'] == 'CMYK'
+        assert call('GET', '/exports/' + result['id'] + '/verify')['valid']
+    finally:
+        app.extensions['scheduler'].shutdown()
+        app.extensions['pipelines'].executor.shutdown()
+
+
+def test_14_pdf_embeds_colour_basis(tmp_path_factory):
+    app, client, call, collection, document, directory = colour_work(tmp_path_factory)
+    try:
+        result = call('POST', '/documents/' + document['id'] + '/export', {'kind': 'pdf', 'options': {'dpi': 150}})
+        payload = client.get('/api/exports/' + result['id'] + '/download')
+        pdf = fitz.open(stream=payload.data, filetype='pdf')
+        assert len(pdf) == 4
+        names = [page.get_image_info()[0]['cs-name'] for page in pdf]
+        assert names[0] == 'ICCBased(RGB,sRGB built-in)'
+        assert 'Adobe RGB' in names[1]
+        assert names[2] == 'Lab'
+        assert 'ICCBased(CMYK' in names[3]
+        colour = result['color']['pages']
+        assert [item['pdf_colorspace'] for item in colour] == ['ICCBased(3)', 'ICCBased(3)', 'Lab (D50)', 'ICCBased(4)']
+        assert call('GET', '/exports/' + result['id'] + '/verify')['valid']
+        pdf.close()
+        # Processing happens on sRGB working data and the delivery is converted back to CMYK.
+        page_id = document['pages'][3]['id']
+        call('POST', '/pages/' + page_id + '/process', {'operation': 'illumination', 'params': {'strength': 0.2}})
+        info = call('GET', '/pages/' + page_id + '/color')
+        assert info['working_space'] == 'sRGB'
+        assert info['delivery']['mode'] == 'preserve' and info['delivery']['family'] == 'CMYK'
+        assert info['delivery']['source'] == 'working'
+        assert any('超出' in warning or '回写' in warning for warning in info['delivery']['warnings'])
+    finally:
+        app.extensions['scheduler'].shutdown()
+        app.extensions['pipelines'].executor.shutdown()
+
+
+def test_15_damaged_profile_and_monochrome_are_disclosed(tmp_path_factory):
+    app, client, call, collection, document, directory = colour_work(tmp_path_factory)
+    try:
+        store = app.extensions['store']
+        page_id = document['pages'][1]['id']
+        page = store.get('pages', page_id)
+        broken = client.post('/api/documents/' + document['id'] + '/import',
+                             data={'files': (io.BytesIO(b'not an image'), 'broken.png')}, headers=HEADERS)
+        assert broken.status_code == 207
+        # Corrupt description: keep the original file, declare the lost colour basis.
+        source = Image.open(ROOT / 'demo' / 'practice' / 'color_management' / 'wide_gamut.png')
+        damaged = io.BytesIO()
+        source.save(damaged, format='PNG', icc_profile=b'\x00' * 32)
+        response = client.post('/api/documents/' + document['id'] + '/import',
+                               data={'files': (io.BytesIO(damaged.getvalue()), 'damaged.png')}, headers=HEADERS)
+        assert response.status_code == 201
+        damaged_page = store.get('pages', response.json['page_ids'][0])
+        info = call('GET', '/pages/' + damaged_page['id'] + '/color')
+        assert info['source']['profile']['valid'] is False
+        assert info['source']['profile']['path']
+        assert app.extensions['store'].resolve(info['source']['profile']['path']).is_file()
+        assert any('损坏' in loss['message'] for loss in info['losses'])
+        assert info['delivery']['mode'] == 'screen'
+        # Deliberate monochrome: current pixels lose colour, the basis is recorded.
+        call('POST', '/pages/' + page_id + '/process', {'operation': 'color', 'params': {'mode': 'binary'}})
+        info = call('GET', '/pages/' + page_id + '/color')
+        assert info['monochrome']['converted'] is True
+        assert info['monochrome']['original_profile']['recognized'] == 'adobe_rgb'
+        assert info['delivery']['mode'] == 'screen'
+        assert any(loss['kind'] == 'monochrome' for loss in info['losses'])
+        exported = call('POST', '/documents/' + document['id'] + '/export', {'kind': 'zip'})
+        archive = zipfile.ZipFile(io.BytesIO(client.get('/api/exports/' + exported['id'] + '/download').data))
+        metadata = json.loads(archive.read('metadata.json'))
+        entry = next(item for item in metadata['colour']['pages'] if item['page_id'] == page_id)
+        assert entry['delivery']['mode'] == 'screen'
+        assert entry['color']['monochrome']['converted'] is True
+        assert call('GET', '/exports/' + exported['id'] + '/verify')['valid']
+        # Restoring the original brings back the source colour basis.
+        call('POST', '/pages/' + page_id + '/restore', {})
+        info = call('GET', '/pages/' + page_id + '/color')
+        assert info['monochrome']['converted'] is False
+        assert info['delivery']['mode'] == 'preserve'
+    finally:
+        app.extensions['scheduler'].shutdown()
+        app.extensions['pipelines'].executor.shutdown()
+
+
+def test_16_plain_scan_without_profile_stays_consistent(tmp_path_factory):
+    directory = tmp_path_factory.mktemp('paperflow-colour-plain')
+    app = create_app(directory, demo=False)
+    client = app.test_client()
+    def call(method, path, values=None):
+        response = client.open('/api' + path, method=method, json=values, headers=HEADERS)
+        assert response.status_code < 400, (path, response.status_code, response.json)
+        return response.json
+    collection = call('POST', '/collections', {'name': '普通扫描', 'category': '测试'})
+    document = call('POST', '/documents', {'collection_id': collection['id'], 'name': '普通扫描'})
+    with (ROOT / 'demo' / 'demo_1.png').open('rb') as handle:
+        client.post('/api/documents/' + document['id'] + '/import',
+                    data={'files': (io.BytesIO(handle.read()), 'demo_1.png')}, headers=HEADERS)
+    document = call('GET', '/documents/' + document['id'])
+    info = call('GET', '/pages/' + document['pages'][0]['id'] + '/color')
+    assert info['source']['assumption'] == 'sRGB'
+    assert info['delivery']['mode'] == 'preserve'
+    assert info['delivery']['warnings'] and '无色彩描述' in info['delivery']['warnings'][0]
+    result = call('POST', '/documents/' + document['id'] + '/export', {'kind': 'pdf'})
+    pdf = fitz.open(stream=client.get('/api/exports/' + result['id'] + '/download').data, filetype='pdf')
+    assert pdf[0].get_image_info()[0]['cs-name'] == 'ICCBased(RGB,sRGB built-in)'
+    pdf.close()
+    app.extensions['scheduler'].shutdown()
+    app.extensions['pipelines'].executor.shutdown()
+

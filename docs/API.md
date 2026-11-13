@@ -60,7 +60,18 @@ POST /documents/{id}/export
 {"kind":"searchable_pdf","options":{"dpi":150}}
 ```
 
-kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导出顺序）、dpi、image_format、quality、include_originals。结果返回导出id，`GET /exports/{id}/download` 下载；`GET /exports/{id}/verify` 校验。可搜索PDF拒绝缺失或过期OCR。
+kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导出顺序）、dpi、image_format、quality、include_originals。结果返回导出id，`GET /exports/{id}/download` 下载；`GET /exports/{id}/verify` 校验。可搜索PDF拒绝缺失或过期OCR。导出结果的 `color.pages` 逐页说明本次交付的色彩依据、嵌入描述与警告。
+
+## 色彩依据
+
+导入时读取原件内嵌 ICC 描述与真实颜色模式（RGB/CMYK/Lab/灰度），原件保留；页面记录的 `color` 分为三段：
+
+- `source`：原件实际声明的色彩（ICC 描述、颜色模式；无描述时为 `assumption`，损坏描述记为 `valid:false` 并另存描述字节）。
+- `working`：屏幕审阅、缩略图、OCR 与全部像素处理统一使用的 sRGB 工作空间。
+- `delivery`：导出应采用的依据。带可用描述的原件回写该色域并嵌入原描述；无描述、描述损坏或主动单色化时明确说明按 sRGB 交付及失去的信息。
+
+`GET /pages/{id}/color` 返回单页三段说明、损失记录与警告；`GET /documents/{id}/color` 返回整份文档。`GET /pages/{id}/image?variant=current|original|thumbnail|native` 中前三者均为 sRGB 工作结果，`native` 为原色域像素副本。图片 ZIP 同时写出 `colour-report.json`；TIFF/JPEG 可保留 CMYK 与 Lab，PNG/BMP 等不支持时同批附带 `_原色域` 副本并在报告中说明。PDF 按每页交付色域内嵌 ICC 描述（Lab 使用 PDF /Lab D50）。归档 ZIP 的 `metadata.json` 含 `colour` 段并携带 `profiles/`。对已有无描述扫描件，`source.assumption` 为 sRGB，屏幕与交付都用 sRGB 并嵌入该描述。
+
 
 ## 文档编排
 
@@ -132,6 +143,7 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 | GET | `/api/documents/<identifier>` |
 | PATCH | `/api/documents/<identifier>` |
 | DELETE | `/api/documents/<identifier>` |
+| GET | `/api/documents/<identifier>/color` |
 | POST | `/api/documents/<identifier>/export` |
 | POST | `/api/documents/<identifier>/import` |
 | POST | `/api/documents/<identifier>/reorder` |
@@ -146,6 +158,7 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 | GET | `/api/pages/<identifier>` |
 | PATCH | `/api/pages/<identifier>` |
 | GET | `/api/pages/<identifier>/edges` |
+| GET | `/api/pages/<identifier>/color` |
 | GET | `/api/pages/<identifier>/image` |
 | POST | `/api/pages/<identifier>/ocr` |
 | PATCH | `/api/pages/<identifier>/ocr` |

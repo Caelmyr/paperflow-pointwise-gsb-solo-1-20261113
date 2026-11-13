@@ -98,6 +98,8 @@ class Checkpoints:
             page = copy.deepcopy(checkpoint['pages'][old_id])
             for field in ('original', 'current', 'thumbnail'):
                 require(self.store.resolve(page[field]).is_file(), '快照图像丢失', 409)
+            if page.get('native'):
+                require(self.store.resolve(page['native']).is_file(), '快照原色副本丢失', 409)
             page['id'] = identity('page')
             page['document_id'] = document_id
             page['created_at'] = now()

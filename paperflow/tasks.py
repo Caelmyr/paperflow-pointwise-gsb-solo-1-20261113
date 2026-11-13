@@ -21,7 +21,7 @@ class Scheduler:
 
     def submit(self, page_ids, operation, params):
         ids(page_ids)
-        choice(operation, '批量操作', ('ocr', 'rotate', 'deskew', 'illumination', 'color', 'denoise', 'enhance', 'perspective', 'restore'))
+        choice(operation, '批量操作', ('ocr', 'rotate', 'deskew', 'illumination', 'color', 'denoise', 'enhance', 'perspective', 'restore', 'screen_suppress'))
         from .parameters import validate_operation
         params = validate_operation(operation, params)
         task = {

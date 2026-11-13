@@ -159,18 +159,31 @@ class Documents:
             sources.attach(retained['id'], [record['id']])
         return imported
 
-    def apply(self, page_id, operation, params, expected_revision=None):
+    def apply(self, page_id, operation, params, expected_revision=None, image_override=None, source_path=None):
         with self.page_lock(page_id):
             page = self.store.get('pages', page_id)
             if expected_revision is not None:
                 require(expected_revision == page['revision'], '页面已变化，请刷新后重试', 409, 'revision_conflict')
             from .parameters import validate_operation
             params = validate_operation(operation, params)
-            image = imaging.read_image(self.store.resolve(page['current']))
-            result, metadata = imaging.process(image, operation, params)
-            path = self.store.new_file('processed')
+            if source_path is not None:
+                # 网纹复核：结果文件已在预览阶段编码并经用户确认，直接复制保证保存结果与预览逐位一致
+                result = imaging.validate_image(imaging.read_image(source_path))
+                path = self.store.new_file('processed')
+                shutil.copyfile(source_path, path)
+                metadata = {'rendered_before_apply': True, 'byte_identical_preview': True}
+            elif image_override is not None:
+                # 调用方已渲染好结果图像，直接落盘
+                result = imaging.validate_image(image_override)
+                path = self.store.new_file('processed')
+                imaging.save_image(path, result)
+                metadata = {'rendered_before_apply': True}
+            else:
+                image = imaging.read_image(self.store.resolve(page['current']))
+                result, metadata = imaging.process(image, operation, params)
+                path = self.store.new_file('processed')
+                imaging.save_image(path, result)
             thumb_path = self.store.new_file('thumbs', '.jpg')
-            imaging.save_image(path, result)
             imaging.thumbnail(thumb_path, result)
             with self.store.transaction() as state:
                 current = state['pages'].get(page_id)

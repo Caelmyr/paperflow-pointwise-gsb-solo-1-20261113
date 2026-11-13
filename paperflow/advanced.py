@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, Response, jsonify, request, send_file
+
+import cv2
 
 from . import analysis, layout
 from .archive import Archives
@@ -14,6 +16,7 @@ from .pipelines import Pipelines
 from .preferences import Preferences
 from .reports import Reports
 from .review import Review
+from .screen_review import Screening
 
 
 def register_advanced(app, store, documents, exporter):
@@ -22,11 +25,16 @@ def register_advanced(app, store, documents, exporter):
     auditor = Auditor(store)
     catalog = Catalog(store)
     review = Review(store)
+    screening_review = Screening(store, documents)
     pipelines = Pipelines(store, documents)
     preferences = Preferences(store)
     reports = Reports(store, auditor, review)
     interchange = Interchange(store, exporter)
-    app.extensions.update(archives=archives, auditor=auditor, catalog=catalog, review=review, pipelines=pipelines, preferences=preferences, reports=reports, interchange=interchange)
+    app.extensions.update(
+        archives=archives, auditor=auditor, catalog=catalog, review=review,
+        screening=screening_review, pipelines=pipelines, preferences=preferences,
+        reports=reports, interchange=interchange,
+    )
 
     def body():
         values = request.get_json(silent=True)
@@ -57,6 +65,50 @@ def register_advanced(app, store, documents, exporter):
     @routes.get('/pages/<page_id>/recommendations')
     def page_recommendations(page_id):
         return jsonify(analysis.recommend(image(page_id)))
+
+    @routes.post('/pages/<page_id>/screen/analyze')
+    def screen_analyze(page_id):
+        return jsonify(screening_review.analyze(page_id, body()))
+
+    @routes.get('/pages/<page_id>/screen/review')
+    def screen_review_state(page_id):
+        return jsonify(screening_review.review_state(page_id))
+
+    @routes.post('/pages/<page_id>/screen/regions/<region_id>/decision')
+    def screen_region_decision(page_id, region_id):
+        payload = body()
+        payload['region_id'] = region_id
+        return jsonify(screening_review.set_region_decision(page_id, payload))
+
+    @routes.post('/pages/<page_id>/screen/protection')
+    def screen_add_protection(page_id):
+        return jsonify(screening_review.add_protection(page_id, body())), 201
+
+    @routes.delete('/pages/<page_id>/screen/protection/<protection_id>')
+    def screen_remove_protection(page_id, protection_id):
+        return jsonify(screening_review.remove_protection(page_id, protection_id))
+
+    @routes.post('/pages/<page_id>/screen/preview')
+    def screen_preview(page_id):
+        return jsonify(screening_review.preview(page_id, body())), 201
+
+    @routes.get('/pages/<page_id>/screen/preview/<preview_id>/image')
+    def screen_preview_image(page_id, preview_id):
+        kind = request.args.get('kind', 'result')
+        path, _ = screening_review.preview_file(page_id, preview_id, kind)
+        return send_file(path, mimetype='image/png', conditional=True)
+
+    @routes.get('/pages/<page_id>/screen/preview/<preview_id>/regions/<region_id>/crop')
+    def screen_region_crop(page_id, preview_id, region_id):
+        kind = request.args.get('kind', 'after')
+        bundle = screening_review.region_crop(page_id, preview_id, region_id)
+        chosen = bundle['after'] if kind == 'after' else bundle['before']
+        ok, encoded = cv2.imencode('.png', chosen)
+        return Response(encoded.tobytes(), mimetype='image/png')
+
+    @routes.post('/pages/<page_id>/screen/apply')
+    def screen_apply(page_id):
+        return jsonify(screening_review.apply(page_id, body()))
 
     @routes.post('/catalog/query')
     def catalog_query():

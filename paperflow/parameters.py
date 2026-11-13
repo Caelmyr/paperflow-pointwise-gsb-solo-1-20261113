@@ -73,6 +73,25 @@ class Region(Parameter):
         return result
 
 
+class FreeForm(Parameter):
+    """网纹复核等服务端已校验的结构化参数，透传并限制体积。"""
+
+    def __init__(self, default=None, required=False, maximum=200):
+        super().__init__(default, required)
+        self.maximum = maximum
+
+    def validate(self, value, field):
+        require(value is not None or not self.required, '缺少参数：' + field)
+        require(isinstance(value, (dict, list, str)), field + '必须是结构化对象或文本')
+        require(len(str(value)) <= self.maximum * 100, field + '内容过大')
+        return value
+
+    def describe(self):
+        result = super().describe()
+        result['type'] = 'object'
+        return result
+
+
 class Corners(Parameter):
     def validate(self, value, field):
         if value is None:
@@ -140,6 +159,13 @@ def build_registry():
         'area': Numeric(0, 100, 8, integer=True),
         'median': Numeric(1, 9, 3, integer=True, odd=True),
         'region': Region(),
+    })
+    registry['screen_suppress'] = Operation('印刷网纹抑制', 'cleanup', {
+        'strength': Numeric(0, 1, 0.8),
+        'preview_id': FreeForm(required=True, maximum=120),
+        'regions': FreeForm(maximum=400),
+        'protected': FreeForm(maximum=200),
+        'metrics': FreeForm(maximum=200),
     })
     registry['crop'] = Operation('区域裁切', 'geometry', {
         'region': Region(required=True),

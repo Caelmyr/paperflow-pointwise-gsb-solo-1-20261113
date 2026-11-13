@@ -10,7 +10,7 @@ OPERATIONS = {
     'perspective', 'rotate', 'deskew', 'illumination', 'color', 'denoise', 'crop', 'enhance',
     'contrast', 'clahe', 'sharpen', 'white_balance', 'gamma', 'stretch', 'bilateral',
     'remove_border', 'pad', 'resize', 'erase', 'morph_text', 'sauvola', 'remove_lines',
-    'flatten_background', 'invert', 'flip', 'ocr',
+    'flatten_background', 'invert', 'flip', 'ocr', 'screen_suppress',
 }
 
 

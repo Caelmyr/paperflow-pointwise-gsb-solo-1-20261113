@@ -24,6 +24,14 @@ class Auditor:
                     references[entry[field]].append({'kind': 'history', 'id': page['id'], 'field': field})
             for region in page.get('regions', []):
                 references[region['path']].append({'kind': 'region', 'id': region['id'], 'page_id': page['id']})
+            review = page.get('screen_review')
+            if review:
+                for preview in review.get('previews', []):
+                    for field in ('path', 'overlay_path'):
+                        if preview.get(field):
+                            references[preview[field]].append(
+                                {'kind': 'screen_preview', 'id': preview['id'], 'page_id': page['id']}
+                            )
         for record in state.get('exports', {}).values():
             references[record['path']].append({'kind': 'export', 'id': record['id']})
         for record in state.get('backups', {}).values():
@@ -112,7 +120,7 @@ class Auditor:
         categories = {}
         total_bytes = 0
         total_files = 0
-        for category in ('sources', 'originals', 'processed', 'thumbs', 'regions', 'exports', 'incoming'):
+        for category in ('sources', 'originals', 'processed', 'thumbs', 'regions', 'exports', 'incoming', 'screen_previews'):
             directory = self.store.root / category
             files = 0
             size = 0
@@ -167,7 +175,7 @@ class Auditor:
         cutoff = time.time() - minimum_age_hours * 3600
         references = self.referenced_paths()
         candidates = []
-        for category in ('processed', 'thumbs', 'regions', 'exports', 'incoming'):
+        for category in ('processed', 'thumbs', 'regions', 'exports', 'incoming', 'screen_previews'):
             for path in (self.store.root / category).iterdir():
                 if not path.is_file() or path.is_symlink():
                     continue

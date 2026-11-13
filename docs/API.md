@@ -84,6 +84,21 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 
 质量分析 `/pages/{id}/analysis`，版面 `/layout`，处理前后差异 `/comparison`，建议 `/recommendations`；元数据 `/documents/{id}/metadata`；检索分面 `/catalog/facets`；POST `/catalog/query` 支持分类、标签、作者、集合、OCR、分页排序；复核队列 `/review/queue`；低置信度 `/pages/{id}/low-confidence`；页面批注 `/notes`；工作流 `/pipelines` 与 `/pipeline-runs`；导出预检 `/documents/{id}/preflight`；完整性 `/audit/integrity?deep=1`；空间 `/audit/storage`；来源 `/sources`；备份 `/backups`；归档导入 multipart `/archives/import`（file、collection_id）；用户设置 `/preferences`；会话 `/session`。
 
+## 印刷网纹（halftone / moiré）分区治理
+
+针对彩色杂志、复印插图的规则网点与扫描摩尔纹。检测与抑制分离，先给证据与置信度，由人按区域确认；依据不足默认保留并说明原因，文字、细线与本就重复的织物纹理可保护。
+
+1. `POST /pages/{id}/screen/analyze`：在原始分辨率上按 128px 图块做局部频谱与自相关分析，返回 `grid_summary`（high/medium/uncertain/none 图块数）与合并后的 `regions`。每区域含 `confidence_level`、`confidence`、`rect`、`spacing`（网点间距 px）、`angle`（角度）、`reason`（中文依据）与默认 `decision`（high 默认 suppress，其余默认 keep）。检测不修改图像。
+2. `GET /pages/{id}/screen/review`：读取当前复核状态（区域、手动保护、预览、是否已确认）。
+3. `POST /pages/{id}/screen/regions/{region_id}/decision`：body `{"decision":"suppress"|"keep"}` 按区域确认或保留。
+4. `POST /pages/{id}/screen/protection`：body `{"rect":[x,y,w,h],"label":"…"}` 增加手动保护区域（至少 16×16），抑制时该矩形逐位不变；`DELETE /pages/{id}/screen/protection/{protection_id}` 移除。
+5. `POST /pages/{id}/screen/preview`：body `{"strength":0~1}`，按当前区域决策与保护掩膜在**原始分辨率**渲染，返回 `metrics`（细节损失、抑制像素占比）与每区域 `region_metrics`（波纹能量前后值、平均变化、细节损失）。预览不缩小，可放大到 100% 核对。
+6. `GET /pages/{id}/screen/preview/{preview_id}/image?kind=result|overlay`：下载全分辨率结果图或区域依据叠加图。
+7. `GET /pages/{id}/screen/preview/{preview_id}/regions/{region_id}/crop?kind=before|after`：下载该区域 1:1 局部原图/结果，缩放预览无法掩盖原分辨率波纹。
+8. `POST /pages/{id}/screen/apply`：body `{"preview_id":"…"}` 确认抑制。保存的整图与该预览**逐位一致**（直接复制预览文件），历史记录为 `screen_suppress` 操作；原图与所有历史版本可通过 `/restore` 回看。
+
+重复调整时，已确认抑制的矩形会在下次 `analyze` 中标记 `already_suppressed` 并排除，不会把已处理网点当作新细节继续抹除。图像被其他操作改变后，旧复核返回 409，需重新检测。不同方向、间距、颜色的网点在每个图块内按各自频谱峰独立陷波，不套用统一模糊。
+
 所有已注册接口完整列表见下方（由运行中的同版本 Flask 路由表生成）。
 
 | 方法 | 路径 |
@@ -164,6 +179,15 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 | GET | `/api/pages/<page_id>/provenance` |
 | GET | `/api/pages/<page_id>/recommendations` |
 | POST | `/api/pages/<page_id>/review` |
+| POST | `/api/pages/<page_id>/screen/analyze` |
+| GET | `/api/pages/<page_id>/screen/review` |
+| POST | `/api/pages/<page_id>/screen/regions/<region_id>/decision` |
+| POST | `/api/pages/<page_id>/screen/protection` |
+| DELETE | `/api/pages/<page_id>/screen/protection/<protection_id>` |
+| POST | `/api/pages/<page_id>/screen/preview` |
+| GET | `/api/pages/<page_id>/screen/preview/<preview_id>/image` |
+| GET | `/api/pages/<page_id>/screen/preview/<preview_id>/regions/<region_id>/crop` |
+| POST | `/api/pages/<page_id>/screen/apply` |
 | POST | `/api/pages/<page_id>/split-spread` |
 | POST | `/api/pages/concatenate` |
 | POST | `/api/pages/copy` |

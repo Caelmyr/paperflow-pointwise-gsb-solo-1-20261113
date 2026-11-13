@@ -11,7 +11,7 @@ import fitz
 import numpy as np
 from PIL import Image, ImageOps
 
-from . import imaging, ocr
+from . import imaging, measurement, ocr
 from .core import DomainError, digest, identity, ids, now, number, require, string
 
 MAX_FILE_BYTES = 60 * 1024 * 1024
@@ -35,7 +35,7 @@ class Documents:
         document['pages'] = [state['pages'][page_id] for page_id in document['page_ids']]
         return document
 
-    def add_image(self, document_id, image, name, source=None, position=None):
+    def add_image(self, document_id, image, name, source=None, position=None, size_basis=None):
         imaging.validate_image(image)
         self.store.get('documents', document_id)
         original_path = self.store.new_file('originals')
@@ -55,6 +55,8 @@ class Documents:
             'sha256': digest(original_path),
             'width': image.shape[1],
             'height': image.shape[0],
+            'measurement': size_basis or measurement.empty_measurement(),
+            'original_measurement': copy.deepcopy(size_basis) if size_basis else measurement.empty_measurement(),
             'revision': 0,
             'created_at': now(),
             'updated_at': now(),
@@ -129,8 +131,13 @@ class Documents:
                     image = np.frombuffer(pixmap.samples, np.uint8).reshape(pixmap.height, pixmap.width, 3)
                     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                     source = {'name': name, 'type': 'pdf', 'page': index + 1}
+                    # PDF 页面的点尺寸是纸面大小的可信依据，按本次渲染像素记录有效密度。
+                    size_basis = measurement.from_pdf_page(
+                        pixmap.width, pixmap.height, pdf_page.rect,
+                        {'kind': 'pdf', 'name': name, 'page': index + 1,
+                         'width_pt': pdf_page.rect.width, 'height_pt': pdf_page.rect.height})
                     insertion = None if position is None else position + len(imported)
-                    record = self.add_image(document_id, image, f'{Path(name).stem} · {index + 1}', source, insertion)
+                    record = self.add_image(document_id, image, f'{Path(name).stem} · {index + 1}', source, insertion, size_basis)
                     imported.append(record['id'])
                     sources.attach(retained['id'], [record['id']])
             finally:
@@ -144,17 +151,34 @@ class Documents:
                             break
                         tiff.seek(frame)
                         require(tiff.width * tiff.height <= imaging.MAX_PIXELS, 'TIFF 页面过大')
-                        rgb = np.asarray(ImageOps.exif_transpose(tiff).convert('RGB'))
+                        frame_dpi = measurement.read_image_dpi(tiff)
+                        normalized = ImageOps.exif_transpose(tiff)
+                        rgb = np.asarray(normalized.convert('RGB'))
                         image = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                        size_basis = None
+                        if frame_dpi:
+                            size_basis = measurement.from_source_dpi(
+                                image.shape[1], image.shape[0], frame_dpi,
+                                {'kind': 'tiff', 'name': name, 'page': frame + 1, 'dpi': frame_dpi})
                         insertion = None if position is None else position + len(imported)
-                        record = self.add_image(document_id, image, f'{Path(name).stem} · {frame + 1}', {'name': name, 'type': 'tiff', 'page': frame + 1}, insertion)
+                        record = self.add_image(
+                            document_id, image, f'{Path(name).stem} · {frame + 1}',
+                            {'name': name, 'type': 'tiff', 'page': frame + 1}, insertion, size_basis)
                         imported.append(record['id'])
                         sources.attach(retained['id'], [record['id']])
             except (OSError, ValueError) as error:
                 raise DomainError('TIFF 读取失败：' + str(error)) from error
         else:
             image = imaging.read_image(path)
-            record = self.add_image(document_id, image, Path(name).stem, {'name': name, 'type': 'image'}, position)
+            # 仅采信文件自带的可信密度；照片缺少密度时保持无依据状态，不套用默认值。
+            source_dpi = measurement.read_file_dpi(path)
+            size_basis = None
+            if source_dpi:
+                size_basis = measurement.from_source_dpi(
+                    image.shape[1], image.shape[0], source_dpi,
+                    {'kind': 'image', 'name': name, 'dpi': source_dpi})
+            record = self.add_image(document_id, image, Path(name).stem,
+                                    {'name': name, 'type': 'image'}, position, size_basis)
             imported.append(record['id'])
             sources.attach(retained['id'], [record['id']])
         return imported
@@ -167,7 +191,13 @@ class Documents:
             from .parameters import validate_operation
             params = validate_operation(operation, params)
             image = imaging.read_image(self.store.resolve(page['current']))
+            before_size = (page['width'], page['height'])
             result, metadata = imaging.process(image, operation, params)
+            after_size = (result.shape[1], result.shape[0])
+            basis_before = measurement.normalize(page.get('measurement'))
+            # 几何/采样操作对纸边和测量依据的影响在这里区分处理；非几何操作原样保留。
+            basis_after = measurement.apply_geometry(basis_before, operation, params,
+                                                      before_size, after_size, metadata)
             path = self.store.new_file('processed')
             thumb_path = self.store.new_file('thumbs', '.jpg')
             imaging.save_image(path, result)
@@ -186,17 +216,23 @@ class Documents:
                     'after': self.store.relative(path),
                     'before_width': current['width'],
                     'before_height': current['height'],
+                    'measurement_before': basis_before,
+                    'measurement_after': basis_after,
                 })
                 current['current'] = self.store.relative(path)
                 current['thumbnail'] = self.store.relative(thumb_path)
                 current['width'] = result.shape[1]
                 current['height'] = result.shape[0]
+                current['measurement'] = basis_after
                 current['quality'] = imaging.quality(result)
                 current['revision'] += 1
                 current['updated_at'] = now()
                 if current['ocr']:
                     current['ocr']['stale'] = True
-                self.store.event(state, '图像处理', page_id, {'operation': operation})
+                self.store.event(state, '图像处理', page_id, {
+                    'operation': operation,
+                    'measurement_status': basis_after['status'],
+                })
             return self.store.get('pages', page_id)
 
     def restore(self, page_id, history_id=None):
@@ -205,12 +241,21 @@ class Documents:
             if history_id:
                 entries = [entry for entry in page['history'] if entry['id'] == history_id]
                 require(bool(entries), '历史版本不存在', 404)
-                target = entries[0]['after']
+                entry = entries[0]
+                target = entry['after']
+                # 恢复只采用该历史版本自身保存的依据决定，不借用其他版本或当前版本。
+                target_basis = measurement.normalize(entry.get('measurement_after'))
             else:
+                entry = None
                 target = page['original']
+                target_basis = measurement.normalize(page.get('original_measurement'))
             image = imaging.read_image(self.store.resolve(target))
             thumb_path = self.store.new_file('thumbs', '.jpg')
             imaging.thumbnail(thumb_path, image)
+            basis_before = measurement.normalize(page.get('measurement'))
+            # 恢复只采用该历史版本自身保存的依据，并按恢复后实际像素重新锚定密度，
+            # 避免旋转/纠偏链导致旧密度与当前像素方向不一致。
+            target_basis = measurement.reanchor(target_basis, image.shape[1], image.shape[0])
             with self.store.transaction() as state:
                 current = state['pages'][page_id]
                 current['history'].append({
@@ -223,17 +268,23 @@ class Documents:
                     'after': target,
                     'before_width': current['width'],
                     'before_height': current['height'],
+                    'measurement_before': basis_before,
+                    'measurement_after': target_basis,
                 })
                 current['current'] = target
                 current['thumbnail'] = self.store.relative(thumb_path)
                 current['width'] = image.shape[1]
                 current['height'] = image.shape[0]
+                current['measurement'] = target_basis
                 current['quality'] = imaging.quality(image)
                 current['revision'] += 1
                 current['updated_at'] = now()
                 if current['ocr']:
                     current['ocr']['stale'] = True
-                self.store.event(state, '恢复图像', page_id)
+                self.store.event(state, '恢复图像', page_id, {
+                    'history_id': history_id,
+                    'measurement_status': target_basis['status'],
+                })
             return self.store.get('pages', page_id)
 
     def recognize(self, page_id, params):
@@ -394,19 +445,56 @@ class Documents:
             self.store.event(state, '合并文档', new_id, {'source': document_ids, 'consume': consume})
         return self.document(new_id)
 
+    def confirm_measurement(self, page_id, values):
+        """人工确认当前页面的物理尺寸依据（已知纸边或实测长度）。"""
+        with self.page_lock(page_id):
+            page = self.store.get('pages', page_id)
+            values = dict(values or {})
+            values.setdefault('width_px', page['width'])
+            values.setdefault('height_px', page['height'])
+            updated = measurement.confirm(page.get('measurement'), values)
+            require(updated['status'] == 'confirmed', '物理尺寸依据确认失败')
+            with self.store.transaction() as state:
+                current = state['pages'].get(page_id)
+                require(current is not None, '页面不存在', 404)
+                current['measurement'] = updated
+                current['updated_at'] = now()
+                self.store.event(state, '确认页面物理尺寸依据', page_id, {
+                    'basis': updated['basis'],
+                    'physical_width_mm': updated['physical_width_mm'],
+                    'physical_height_mm': updated['physical_height_mm'],
+                })
+            return self.store.get('pages', page_id)
+
     def extract_region(self, page_id, values):
         with self.page_lock(page_id):
             page = self.store.get('pages', page_id)
             image = imaging.read_image(self.store.resolve(page['current']))
             x, y, w, h = imaging.rectangle(values.get('region'), image)
             path = self.store.new_file('regions')
-            imaging.save_image(path, image[y:y + h, x:x + w])
+            basis = measurement.normalize(page.get('measurement'))
+            # 区域图片沿用所属页面的测量依据：按区域像素占比换算其纸面范围与有效密度。
+            region_basis = None
+            if measurement.is_confirmed(basis):
+                dpi = basis['source_dpi']
+                region_basis = {
+                    'status': 'confirmed',
+                    'basis': basis['basis'],
+                    'source_dpi': dpi,
+                    'physical_width_mm': round(w * measurement.MM_PER_INCH / dpi, 3),
+                    'physical_height_mm': round(h * measurement.MM_PER_INCH / dpi, 3),
+                    'page_id': page_id,
+                    'origin_region': [x, y, w, h],
+                }
+            imaging.save_image(path, image[y:y + h, x:x + w], dpi=region_basis['source_dpi'] if region_basis else None)
             record = {
                 'id': identity('region'),
                 'name': string(values.get('name', '提取区域'), '区域名称', 100),
                 'kind': values.get('kind', 'illustration'),
                 'rect': [x, y, w, h],
                 'path': self.store.relative(path),
+                'measurement': region_basis or {'status': 'unconfirmed', 'page_id': page_id,
+                                                'origin_region': [x, y, w, h]},
                 'image_revision': page['revision'],
                 'created_at': now(),
             }

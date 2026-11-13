@@ -95,6 +95,14 @@ class Auditor:
                         issues.append({'code': 'image_size_mismatch', 'page_id': page['id']})
                 except Exception as error:
                     issues.append({'code': 'invalid_image', 'page_id': page['id'], 'message': str(error)})
+                basis = page.get('measurement')
+                if basis and basis.get('status') == 'confirmed' and basis.get('source_dpi'):
+                    # 依据内部一致性：像素、密度与物理尺寸必须互相吻合（容忍毫米取整误差）。
+                    expected_width = page['width'] * 25.4 / basis['source_dpi']
+                    expected_height = page['height'] * 25.4 / basis['source_dpi']
+                    if (abs(expected_width - basis['physical_width_mm']) > 0.6
+                            or abs(expected_height - basis['physical_height_mm']) > 0.6):
+                        issues.append({'code': 'measurement_inconsistent', 'page_id': page['id']})
         return {
             'checked_at': now(),
             'revision': state['revision'],

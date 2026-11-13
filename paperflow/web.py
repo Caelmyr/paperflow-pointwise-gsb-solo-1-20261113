@@ -13,6 +13,7 @@ from .demo import seed
 from .documents import Documents
 from .exports import Exporter
 from .imaging import detect_edges, read_image, skew_angle
+from . import measurement
 from .tasks import Scheduler
 
 
@@ -192,6 +193,16 @@ def create_app(data_root=None, demo=True):
     def skew(identifier):
         page = store.get('pages', identifier)
         return jsonify(skew_angle(read_image(store.resolve(page['current']))))
+
+    @app.get('/api/pages/<identifier>/measurement')
+    def page_measurement(identifier):
+        page = store.get('pages', identifier)
+        return jsonify(measurement.summary(page.get('measurement')))
+
+    @app.post('/api/pages/<identifier>/measurement')
+    def confirm_measurement(identifier):
+        value = body()
+        return jsonify(documents.confirm_measurement(identifier, value))
 
     @app.post('/api/pages/<identifier>/process')
     def process(identifier):

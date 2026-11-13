@@ -9,6 +9,7 @@ from pathlib import Path
 import fitz
 from PIL import Image
 
+from . import measurement
 from .core import digest, now, require
 
 
@@ -47,10 +48,25 @@ class Preflight:
                         image.verify()
                 except Exception as error:
                     issues.append({'code': 'corrupt_image', 'message': str(error)})
+            basis = measurement.normalize(page.get('measurement'))
+            if kind in ('pdf', 'searchable_pdf'):
+                if not measurement.is_confirmed(basis):
+                    issues.append({
+                        'code': 'measurement_unconfirmed',
+                        'message': '缺少可信物理尺寸依据，请确认纸张大小或实测边长后再导出 PDF',
+                    })
+                else:
+                    issues.append({
+                        'code': 'physical_size',
+                        'message': (f"纸张 {basis['physical_width_mm']} × {basis['physical_height_mm']} mm"
+                                    f"（依据：{basis['basis']}，密度 {basis['source_dpi']} DPI）"),
+                        'warning': True,
+                    })
             checks.append({
                 'page_id': page['id'],
                 'number': index + 1,
                 'issues': issues,
+                'measurement': measurement.summary(basis),
                 'ready': not any(not issue.get('warning') for issue in issues),
             })
         return {
@@ -115,6 +131,14 @@ class Preflight:
                     'images': image_count,
                     'copiable_characters': len(text),
                 }
+                # 交付的纸幅必须与该页面已确认的物理尺寸一致，而不是导出时选用的分辨率。
+                if source:
+                    expected = measurement.physical_points(source.get('measurement'))
+                    if expected:
+                        item['expected_width_points'] = expected[0]
+                        item['expected_height_points'] = expected[1]
+                        if abs(pdf_page.rect.width - expected[0]) > 0.6 or abs(pdf_page.rect.height - expected[1]) > 0.6:
+                            errors.append(f'第{index + 1}页 PDF 纸幅与已确认的物理尺寸依据不一致')
                 if record['kind'] == 'searchable_pdf' and source and source.get('ocr'):
                     expected = normalize_text(source['ocr']['text'])
                     actual = normalize_text(text)

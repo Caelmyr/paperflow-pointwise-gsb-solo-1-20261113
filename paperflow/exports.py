@@ -4,11 +4,11 @@ import io
 import json
 import re
 import zipfile
-from pathlib import Path
 
 import fitz
 from PIL import Image
 
+from . import measurement
 from .core import DomainError, choice, identity, now, number, require
 
 
@@ -42,19 +42,22 @@ class Exporter:
         return ''.join(chunks).encode('utf-8-sig')
 
     def pdf(self, pages, searchable=False, dpi=150):
-        dpi = number(dpi, 'PDF 分辨率', 72, 600)
+        dpi = number(dpi, 'PDF 输出分辨率', 72, 600)
+        # 纸张大小只取决于每页已确认的物理尺寸；逐页核对，缺少依据的页面不得导出。
+        measurement.require_confirmed(pages)
         document = fitz.open()
         try:
             for source in pages:
-                width = source['width'] * 72 / dpi
-                height = source['height'] * 72 / dpi
-                page = document.new_page(width=width, height=height)
-                page.insert_image(page.rect, filename=str(self.store.resolve(source['current'])))
+                width_pt, height_pt = measurement.physical_points(source['measurement'])
+                page = document.new_page(width=width_pt, height=height_pt)
+                stream = self.render_pdf_image(source, width_pt, height_pt, dpi)
+                page.insert_image(page.rect, stream=stream)
                 if searchable:
                     result = source.get('ocr')
                     require(result is not None, '可搜索 PDF 要求所有页面先完成 OCR', 409)
                     require(not result.get('stale'), '页面图像已变化，请更新 OCR 后导出可搜索 PDF', 409)
-                    self.insert_text(page, source, dpi)
+                    # OCR 坐标基于当前处理图像的像素，与导出时的重采样分辨率无关。
+                    self.insert_text(page, source)
             document.set_metadata({
                 'title': 'PaperFlow 数字化文档',
                 'author': 'PaperFlow',
@@ -65,9 +68,23 @@ class Exporter:
         finally:
             document.close()
 
-    def insert_text(self, pdf_page, source, dpi):
+    def render_pdf_image(self, source, width_pt, height_pt, target_dpi):
+        """按输出分辨率重采样页面图像；物理纸幅保持不变，只改变嵌入图像的清晰度。"""
+        target_width = max(1, round(width_pt * target_dpi / 72))
+        target_height = max(1, round(height_pt * target_dpi / 72))
+        with Image.open(self.store.resolve(source['current'])) as image:
+            if image.size != (target_width, target_height):
+                image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+            buffer = io.BytesIO()
+            image.save(buffer, format='PNG', dpi=(target_dpi, target_dpi))
+        return buffer.getvalue()
+
+    def insert_text(self, pdf_page, source):
         result = source['ocr']
-        scale = 72 / dpi
+        # 文字框坐标是当前处理图像（source['width']/['height'] 像素）下的坐标，
+        # 直接映射到 PDF 点；导出重采样只改变嵌入图像，不改变这一映射，因此换 DPI 文字仍对齐。
+        scale_x = pdf_page.rect.width / source['width']
+        scale_y = pdf_page.rect.height / source['height']
         if result.get('text_override'):
             lines = result['text'].splitlines() or ['']
             box = fitz.Rect(12, 12, pdf_page.rect.width - 12, pdf_page.rect.height - 12)
@@ -83,10 +100,10 @@ class Exporter:
             text = word['text']
             if not text:
                 continue
-            x = word['x'] * scale
-            y = word['y'] * scale
-            width = max(word['width'] * scale, 1)
-            height = max(word['height'] * scale, 1)
+            x = word['x'] * scale_x
+            y = word['y'] * scale_y
+            width = max(word['width'] * scale_x, 1)
+            height = max(word['height'] * scale_y, 1)
             font_size = max(1, height * 0.83)
             estimated = fitz.get_text_length(text, fontname='china-s', fontsize=font_size)
             if estimated > width:
@@ -102,7 +119,17 @@ class Exporter:
                 with Image.open(self.store.resolve(page['current'])) as image:
                     stream = io.BytesIO()
                     image = image.convert('RGB')
-                    image.save(stream, format=image_format.upper(), quality=quality)
+                    # 每页使用各自依据推导出的有效密度；无依据页面不写入任何密度假设。
+                    effective = measurement.effective_dpi(page.get('measurement'), image.size[0])
+                    save_kwargs = {}
+                    if effective:
+                        save_kwargs['dpi'] = (effective, effective)
+                    if image_format == 'jpeg':
+                        image.save(stream, format='JPEG', quality=quality, **save_kwargs)
+                    elif image_format == 'tiff':
+                        image.save(stream, format='TIFF', compression='tiff_lzw', **save_kwargs)
+                    else:
+                        image.save(stream, format='PNG', **save_kwargs)
                     extension = 'jpg' if image_format == 'jpeg' else image_format
                     archive.writestr(f'{index + 1:04d}_{safe_name(page["name"])}.{extension}', stream.getvalue())
         return buffer.getvalue()
@@ -166,6 +193,11 @@ class Exporter:
             'mime': mime,
             'bytes': len(data),
             'page_ids': [page['id'] for page in pages],
+            'output_dpi': options.get('dpi', 150) if kind in ('pdf', 'searchable_pdf') else None,
+            'page_measurements': [
+                {'page_id': page['id'], **measurement.summary(page.get('measurement'))}
+                for page in pages
+            ],
             'created_at': now(),
         }
         with self.store.transaction() as state:

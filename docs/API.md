@@ -62,6 +62,39 @@ POST /documents/{id}/export
 
 kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导出顺序）、dpi、image_format、quality、include_originals。结果返回导出id，`GET /exports/{id}/download` 下载；`GET /exports/{id}/verify` 校验。可搜索PDF拒绝缺失或过期OCR。
 
+### 物理尺寸依据（逐页核对）
+
+页面只保存像素，纸张大小必须有可信依据，系统不会对缺少密度的照片套用默认值。每页记录 `measurement`：
+
+- `status`：`confirmed`（已有可信物理尺寸）或 `unconfirmed`（缺少依据，PDF 导出会被拒绝，状态码409，code=`measurement_unconfirmed`）。
+- `basis`：`source_dpi`（来源文件自带密度）、`pdf_page`（PDF 页面点尺寸）、`manual_paper`（人工确认纸张宽高）、`manual_edge`（人工实测一条边的长度）。
+- `source_dpi`、`physical_width_mm`、`physical_height_mm`、`physical_width_pt`、`physical_height_pt`、`confirmed_by`、`confirmed_at`、`reference`、`history`（依据自身变更轨迹）。
+
+```
+GET /pages/{id}/measurement          # 查看当前页面依据摘要
+POST /pages/{id}/measurement         # 人工确认依据
+```
+
+人工确认两种方式（均需显式提交，宽高单位毫米，范围5–5000）：
+
+```json
+{"basis":"manual_paper","physical_width_mm":210,"physical_height_mm":297,"paper":"A4"}
+{"basis":"manual_edge","edge":"top","length_mm":210.0}
+```
+
+`edge` 为 top/bottom/left/right；另一维按当前像素比例换算。
+
+几何/采样操作对依据的影响各不相同：
+
+- 旋转、镜像：仅交换宽高，依据保持成立；
+- 光照、色彩、降噪等非几何操作：依据完全不变；
+- 缩放（resize，重新采样）：物理尺寸不变，按新像素反推有效密度；
+- 裁切、清除边框：密度不变，物理宽高按裁出像素缩小；
+- 扩展白边（pad）、透视校正、自动纠偏（deskew）：原依据失效，状态回到 `unconfirmed`，历史中保留失效前记录，需用户重新确认；
+- 恢复/复制历史版本：只采用该版本自身保存的依据决定，不借用其他版本。
+
+PDF 导出纸幅只取每页已确认的物理尺寸（点）；`options.dpi`（72–600）仅控制嵌入图像的重采样清晰度，改变它不会改变纸张大小。混合尺寸文档逐页使用各自依据；文字层按嵌入图像实际像素映射到纸面点坐标。区域图片继承所属页面依据并写入对应 DPI 元数据，无依据区域不写入密度。归档 ZIP 往返保留每页自己的 `measurement` 与 `original_measurement`；原始上传文件始终不被修改。
+
 ## 文档编排
 
 - `POST /documents/{id}/reorder`：page_ids 必须完整且不重复。
@@ -147,6 +180,8 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 | PATCH | `/api/pages/<identifier>` |
 | GET | `/api/pages/<identifier>/edges` |
 | GET | `/api/pages/<identifier>/image` |
+| GET | `/api/pages/<identifier>/measurement` |
+| POST | `/api/pages/<identifier>/measurement` |
 | POST | `/api/pages/<identifier>/ocr` |
 | PATCH | `/api/pages/<identifier>/ocr` |
 | POST | `/api/pages/<identifier>/process` |

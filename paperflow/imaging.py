@@ -45,8 +45,15 @@ def read_image(path):
         raise DomainError('图片损坏或格式不支持：' + str(error)) from error
 
 
-def save_image(path, image):
+def save_image(path, image, dpi=None):
     validate_image(image)
+    # 需要写入可信密度时改用 PIL，使物理尺寸依据随文件一起交付；像素内容不变。
+    if dpi is not None:
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        with Image.fromarray(rgb) as output:
+            output.save(path, format='PNG', dpi=(float(dpi), float(dpi)))
+        require(Path(path).is_file() and Path(path).stat().st_size > 0, '图像编码失败', 500)
+        return
     success, encoded = cv2.imencode('.png', image)
     require(success, '图像编码失败', 500)
     temporary = Path(str(path) + '.tmp')

@@ -187,6 +187,13 @@ class Archives:
                     original_image = read_image(self.store.resolve(page['current']))
                     page['width'] = original_image.shape[1]
                     page['height'] = original_image.shape[0]
+                    # 保留该页面自己的尺寸依据；旧归档没有该字段时以无依据状态导入，不借用他人决定。
+                    from . import measurement
+                    page['measurement'] = measurement.normalize(page.get('measurement'))
+                    if 'original_measurement' in page:
+                        page['original_measurement'] = measurement.normalize(page.get('original_measurement'))
+                    else:
+                        page['original_measurement'] = copy.deepcopy(page['measurement'])
                     page['sha256'] = digest(self.store.resolve(page['original']))
                     for entry in page['history']:
                         entry['id'] = identity('history')

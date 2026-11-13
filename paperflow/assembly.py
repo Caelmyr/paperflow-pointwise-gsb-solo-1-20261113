@@ -5,6 +5,7 @@ import numpy as np
 
 from .core import choice, now, number, require, string
 from .imaging import read_image, validate_image
+from . import measurement
 
 
 class Assembly:
@@ -41,8 +42,17 @@ class Assembly:
         validate_image(first)
         validate_image(second)
         source = {'type': 'generated', 'kind': 'split_spread', 'parent_page_id': page_id}
-        first_page = self.documents.add_image(target_id, first, page['name'] + ' · 1', source)
-        second_page = self.documents.add_image(target_id, second, page['name'] + ' · 2', source)
+        # 拆分不重新采样：父页面密度仍成立时，子页面按自身像素继承物理尺寸。
+        parent_basis = measurement.normalize(page.get('measurement'))
+        child_bases = [measurement.generated_measurement(), measurement.generated_measurement()]
+        if measurement.is_confirmed(parent_basis):
+            for index, child in enumerate((first, second)):
+                dpi = parent_basis['source_dpi']
+                child_bases[index] = measurement.from_source_dpi(
+                    child.shape[1], child.shape[0], dpi,
+                    {'kind': 'split_spread', 'parent_page_id': page_id, 'dpi': dpi})
+        first_page = self.documents.add_image(target_id, first, page['name'] + ' · 1', source, None, child_bases[0])
+        second_page = self.documents.add_image(target_id, second, page['name'] + ' · 2', source, None, child_bases[1])
         return {'page_ids': [first_page['id'], second_page['id']], 'original_preserved': True}
 
     def contact_sheet(self, document_id, values):
@@ -96,4 +106,7 @@ class Assembly:
                 result[y:y + image.shape[0], cursor:cursor + image.shape[1]] = image
                 cursor += image.shape[1] + gap
         name = string(values.get('name', '拼接页面'), '页面名称', 200)
-        return self.documents.add_image(target_id, result, name, {'type': 'generated', 'kind': 'concatenate', 'page_ids': page_ids})
+        # 拼接把不同像素密度的内容放进同一画布，不存在统一密度，保持无依据状态待人工确认。
+        return self.documents.add_image(target_id, result, name,
+                                        {'type': 'generated', 'kind': 'concatenate', 'page_ids': page_ids},
+                                        None, measurement.generated_measurement())

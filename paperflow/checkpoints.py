@@ -65,7 +65,7 @@ class Checkpoints:
             old = record['pages'][page_id]
             new = state['pages'][page_id]
             fields = []
-            for field in ('current', 'name', 'ocr', 'regions', 'review'):
+            for field in ('current', 'name', 'ocr', 'regions', 'review', 'measurement'):
                 if old.get(field) != new.get(field):
                     fields.append(field)
             if fields:

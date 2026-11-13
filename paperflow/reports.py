@@ -6,6 +6,7 @@ import io
 import json
 from collections import Counter
 
+from . import measurement
 from .core import identity, now, require
 from .exports import safe_name
 from .layout import extract_fields
@@ -57,6 +58,7 @@ class Reports:
                 },
                 'quality': page.get('quality'),
                 'review': page.get('review'),
+                'measurement': measurement.summary(page.get('measurement')),
                 'issues': issues,
                 'fields': extract_fields(result),
             })
@@ -78,11 +80,18 @@ class Reports:
             ocr = page['ocr']
             confidence = str(ocr['confidence']) + '%' if ocr['recognized'] else '未识别'
             issues = '<br>'.join(escape(issue['message']) for issue in page['issues']) or '无'
+            basis = page['measurement']
+            if basis['status'] == 'confirmed':
+                physical = (f"{basis['physical_width_mm']} × {basis['physical_height_mm']} mm"
+                            f"<br><small>{escape(basis['basis'])} · {basis['source_dpi']} DPI</small>")
+            else:
+                physical = '<small>缺少可信依据<br>待人工确认</small>'
             rows.append(
                 '<tr>'
                 + f'<td>{page["number"]}</td>'
                 + f'<td>{escape(page["name"])}</td>'
                 + f'<td>{page["width"]} × {page["height"]}</td>'
+                + f'<td>{physical}</td>'
                 + f'<td>{page["history_count"]}</td>'
                 + f'<td>{confidence}</td>'
                 + f'<td>{ocr["characters"]}</td>'
@@ -106,7 +115,7 @@ class Reports:
             + f'<small>PAPERFLOW / DIGITIZATION REPORT</small><h1>{title}</h1>'
             + f'<p>生成时间：{escape(report["generated_at"])} · 数据版本：{report["workspace_revision"]}</p>'
             + f'<section class="metrics">{cards}</section>'
-            + '<table><thead><tr><th>页码</th><th>页面名称</th><th>尺寸</th><th>处理次数</th><th>OCR 置信度</th><th>字符数</th><th>待检查项</th></tr></thead><tbody>'
+            + '<table><thead><tr><th>页码</th><th>页面名称</th><th>像素尺寸</th><th>物理尺寸与依据</th><th>处理次数</th><th>OCR 置信度</th><th>字符数</th><th>待检查项</th></tr></thead><tbody>'
             + ''.join(rows)
             + '</tbody></table><p class="footer">PaperFlow 本地数字化报告。质量指标用于辅助人工检查，原始文件始终保留。</p></body></html>'
         )
@@ -115,16 +124,19 @@ class Reports:
     def csv(self, report):
         output = io.StringIO(newline='')
         writer = csv.writer(output)
-        writer.writerow(['页码', '页面', '宽', '高', '版本', '处理次数', '已识别', 'OCR置信度', '字符数', '已校订', '需更新', '原图SHA256'])
+        writer.writerow(['页码', '页面', '宽', '高', '版本', '处理次数', '已识别', 'OCR置信度', '字符数', '已校订', '需更新', '物理宽mm', '物理高mm', '尺寸依据', '依据密度DPI', '原图SHA256'])
         for page in report['pages']:
             name = page['name']
             if name.startswith(('=', '+', '-', '@')):
                 name = "'" + name
+            basis = page['measurement']
             writer.writerow([
                 page['number'], name, page['width'], page['height'],
                 page['revision'], page['history_count'], page['ocr']['recognized'],
                 page['ocr']['confidence'], page['ocr']['characters'],
-                page['ocr']['edited'], page['ocr']['stale'], page['sha256'],
+                page['ocr']['edited'], page['ocr']['stale'],
+                basis.get('physical_width_mm'), basis.get('physical_height_mm'),
+                basis.get('basis') or 'unconfirmed', basis.get('source_dpi'), page['sha256'],
             ])
         return output.getvalue().encode('utf-8-sig')
 

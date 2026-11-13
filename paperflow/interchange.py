@@ -9,6 +9,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from . import measurement
 from .core import choice, identity, now, require
 from .exports import safe_name
 from .layout import ocr_lines, paragraphs
@@ -180,9 +181,19 @@ def export_multipage_tiff(store, pages):
     try:
         for page in pages:
             with Image.open(store.resolve(page['current'])) as source:
-                images.append(source.convert('RGB').copy())
+                frame = source.convert('RGB').copy()
+            # 每帧携带所属页面自己的有效密度；无依据页面不写入密度，避免暗中假设。
+            effective = measurement.effective_dpi(page.get('measurement'), frame.size[0])
+            if effective:
+                frame.info['dpi'] = (effective, effective)
+            images.append(frame)
         require(bool(images), '没有可导出页面')
-        images[0].save(output, format='TIFF', save_all=True, append_images=images[1:], compression='tiff_lzw')
+        first, rest = images[0], images[1:]
+        first_kwargs = {'format': 'TIFF', 'save_all': True, 'append_images': rest,
+                        'compression': 'tiff_lzw'}
+        if 'dpi' in first.info:
+            first_kwargs['dpi'] = first.info['dpi']
+        first.save(output, **first_kwargs)
         return output.getvalue()
     finally:
         for image in images:

@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const state = {workspace:null,document:null,page:null,collection:null,selected:new Set(),selectedDocs:new Set(),view:'current',panel:'tools',mode:'adaptive',corners:null,region:null,drawRegion:false,drag:null,boxes:true,zoom:1};
-const names = {perspective:'透视校正',rotate:'旋转页面',deskew:'自动纠偏',illumination:'修复光照',color:'色彩转换',denoise:'污点清理',crop:'区域裁切',enhance:'扫描增强',restore:'恢复图像',ocr:'文字识别'};
+const state = {workspace:null,document:null,page:null,collection:null,selected:new Set(),selectedDocs:new Set(),view:'current',panel:'tools',mode:'adaptive',corners:null,region:null,drawRegion:false,drag:null,boxes:true,zoom:1,chain:null,chainDraft:null,chainPreview:null};
+const names = {perspective:'透视校正',rotate:'旋转页面',deskew:'自动纠偏',illumination:'修复光照',color:'色彩转换',denoise:'污点清理',crop:'区域裁切',enhance:'扫描增强',restore:'恢复图像',ocr:'文字识别',white_balance:'白平衡',contrast:'亮度对比度',clahe:'局部对比增强',sharpen:'文字锐化',gamma:'伽马校正',stretch:'直方图拉伸',bilateral:'保边降噪',remove_border:'清除边框',pad:'扩展白边',resize:'缩放',erase:'区域擦除',morph_text:'文字形态优化',sauvola:'Sauvola 二值化',remove_lines:'清除表格线',flatten_background:'背景归一化',invert:'反色',flip:'镜像翻转',chain_commit:'确认处理链',chain_update:'修改链节点',chain_remove:'移除链节点'};
 const statuses = {queued:'等待中',running:'正在处理',cancelling:'正在取消',cancelled:'已取消',completed:'已完成',partial:'部分失败',failed:'失败',interrupted:'服务重启中断'};
 let toastTimer, taskTimer, isBusy=false;
 function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -17,7 +17,9 @@ function renderCollections(){const root=$('collections');root.innerHTML='';for(c
 function renderDocuments(){const docs=state.workspace.documents.filter(d=>!state.collection||d.collection_id===state.collection);$('libraryCount').textContent=docs.length;$('documents').innerHTML='';for(const doc of docs){const card=document.createElement('div');card.className='document-card'+(state.document?.id===doc.id?' selected':'');card.tabIndex=0;card.setAttribute('role','button');const cover=doc.page_ids[0];card.innerHTML=`${cover?`<img class="doc-thumb" src="/api/pages/${cover}/image?variant=thumbnail&r=${state.workspace.revision}" alt="文档封面">`:'<div class="doc-thumb"></div>'}<div><h3>${escapeHtml(doc.name)}</h3><p>${doc.page_count} 页 · ${new Date(doc.updated_at).toLocaleDateString('zh-CN')}</p><span class="tag">${escapeHtml(doc.category)}</span></div><input type="checkbox" aria-label="选择文档" ${state.selectedDocs.has(doc.id)?'checked':''}>`;card.onclick=event=>{if(event.target.type==='checkbox'){event.target.checked?state.selectedDocs.add(doc.id):state.selectedDocs.delete(doc.id);return;}openDocument(doc.id).catch(e=>toast(e.message,true));};card.onkeydown=e=>{if(e.key==='Enter')openDocument(doc.id).catch(e=>toast(e.message,true));};$('documents').append(card);}}
 async function openDocument(identifier,pageId){state.document=await api('/documents/'+identifier);state.selected.clear();state.selectedDocs.add(identifier);state.corners=null;state.region=null;$('documentTitle').textContent=state.document.name;$('documentCategory').textContent=state.document.category;$('pageCount').textContent=state.document.pages.length;renderDocuments();renderPages();const page=state.document.pages.find(p=>p.id===pageId)||state.document.pages[0];if(page)await openPage(page.id);else{state.page=null;$('imageStage').style.display='none';$('emptyPreview').style.display='block';$('ocrText').value='';$('history').innerHTML='';}$('workbench').classList.remove('hidden');}
 function renderPages(){$('pages').innerHTML='';if(!state.document)return;state.document.pages.forEach((page,index)=>{const card=document.createElement('div');card.className='page-card'+(state.page?.id===page.id?' active':'');card.draggable=true;card.innerHTML=`<img src="/api/pages/${page.id}/image?variant=thumbnail&r=${page.revision}" alt="第${index+1}页"><input type="checkbox" aria-label="选择第${index+1}页" ${state.selected.has(page.id)?'checked':''}><small>${String(index+1).padStart(2,'0')} · ${escapeHtml(page.name)}</small><div class="page-arrows"><button data-dir="-1" title="上移">↑</button><button data-dir="1" title="下移">↓</button></div>`;card.onclick=event=>{if(event.target.type==='checkbox'){event.target.checked?state.selected.add(page.id):state.selected.delete(page.id);return;}if(event.target.dataset.dir){movePage(index,Number(event.target.dataset.dir));return;}openPage(page.id).catch(e=>toast(e.message,true));};card.ondragstart=e=>e.dataTransfer.setData('text/plain',page.id);card.ondragover=e=>e.preventDefault();card.ondrop=e=>{e.preventDefault();const source=e.dataTransfer.getData('text/plain');const order=[...state.document.page_ids];const from=order.indexOf(source);if(from<0)return;order.splice(from,1);order.splice(index,0,source);saveOrder(order);};$('pages').append(card);});$('selectAll').checked=state.document.pages.length>0&&state.selected.size===state.document.pages.length;}
-async function openPage(identifier){state.page=await api('/pages/'+identifier);state.corners=null;state.region=null;state.drawRegion=false;state.drag=null;$('selectRegion').classList.remove('active');$('imageStage').style.display='block';$('emptyPreview').style.display='none';const variant=state.view==='original'?'original':'current';$('previewImage').src=`/api/pages/${identifier}/image?variant=${variant}&r=${state.page.revision}`;$('originalImage').src=`/api/pages/${identifier}/image?variant=original`;$('imageInfo').textContent=`${state.page.width} × ${state.page.height} px · PNG · 版本 ${state.page.revision}`;$('ocrText').value=state.page.ocr?.text||'';$('ocrStatus').textContent=state.page.ocr?`${state.page.ocr.boxes.length} 个文字框 · 平均置信度 ${state.page.ocr.confidence}%${state.page.ocr.stale?' · 图像已变化，请重新识别':''}${state.page.ocr.edited?' · 已人工校订':''}`:'识别在本机完成，无需网络。';$('wordEditor').innerHTML='';renderHistory();renderRegions();renderPages();drawOverlay();}
+async function openPage(identifier){state.page=await api('/pages/'+identifier);state.corners=null;state.region=null;state.drawRegion=false;state.drag=null;state.chainDraft=null;state.chainPreview=null;$('chainPreviewBox').style.display='none';
+try{state.chain=await api('/pages/'+identifier+'/chain');}catch(error){state.chain=null;toast('处理链读取失败：'+error.message,true);}
+$('selectRegion').classList.remove('active');$('imageStage').style.display='block';$('emptyPreview').style.display='none';const variant=state.view==='original'?'original':'current';$('previewImage').src=`/api/pages/${identifier}/image?variant=${variant}&r=${state.page.revision}`;$('originalImage').src=`/api/pages/${identifier}/image?variant=original`;$('imageInfo').textContent=`${state.page.width} × ${state.page.height} px · PNG · 版本 ${state.page.revision}`;$('ocrText').value=state.page.ocr?.text||'';$('ocrStatus').textContent=state.page.ocr?`${state.page.ocr.boxes.length} 个文字框 · 平均置信度 ${state.page.ocr.confidence}%${state.page.ocr.stale?' · 图像已变化，请重新识别':''}${state.page.ocr.edited?' · 已人工校订':''}`:'识别在本机完成，无需网络。';$('wordEditor').innerHTML='';renderHistory();renderRegions();renderChain();renderPages();drawOverlay();}
 async function reloadCurrent(){const id=state.page?.id;await refresh();if(state.document)await openDocument(state.document.id,id);}
 async function movePage(index,direction){const order=[...state.document.page_ids];const target=index+direction;if(target<0||target>=order.length)return;[order[index],order[target]]=[order[target],order[index]];await saveOrder(order);}
 async function saveOrder(order){await busy('正在保存页序…',async()=>{await api('/documents/'+state.document.id+'/reorder','POST',{page_ids:order});await reloadCurrent();toast('页序已保存，导出将使用此顺序');});}
@@ -33,20 +35,126 @@ $('overlay').onpointermove=event=>{if(!state.drag)return;const [x,y]=canvasCoord
 $('overlay').onpointerup=()=>{state.drag=null;};
 function editWord(box){selectPanel('ocr');$('wordEditor').innerHTML=`<p class="hint">置信度 ${box.confidence}% · 单词校订</p><form class="word-edit" id="wordForm"><input id="wordText" value="${escapeHtml(box.text)}"><button>保存</button></form>`;$('wordForm').onsubmit=event=>{event.preventDefault();busy('正在保存文字框…',async()=>{await api('/pages/'+state.page.id+'/ocr','PATCH',{boxes:[{id:box.id,text:$('wordText').value}]});await openPage(state.page.id);toast('文字框校订已保存');});};}
 function applyZoom(){$('imageStage').style.maxWidth=state.view==='compare'?'50%':`${Math.round(state.zoom*100)}%`;$('imageStage').style.width=state.view==='compare'?'50%':`${Math.round(state.zoom*100)}%`;$('zoomLabel').textContent=Math.round(state.zoom*100)+'%';}
-function renderHistory(){$('history').innerHTML='';for(const item of [...state.page.history].reverse()){const div=document.createElement('div');div.innerHTML=`<b>${escapeHtml(names[item.operation]||item.operation)}</b><small>${new Date(item.time).toLocaleString('zh-CN')}</small><button>恢复此版本</button>`;div.querySelector('button').onclick=()=>busy('正在恢复历史版本…',async()=>{await api('/pages/'+state.page.id+'/restore','POST',{history_id:item.id});await reloadCurrent();});$('history').append(div);}if(!state.page.history.length)$('history').innerHTML='<p class="hint">还没有图像处理记录，原图已安全保存。</p>';}
-function renderRegions(){$('regions').innerHTML=state.page.regions.map(r=>`<a href="/api/pages/${state.page.id}/regions/${r.id}" download>↓ ${escapeHtml(r.name)} · ${r.rect[2]} × ${r.rect[3]}</a>`).join('');}
-function selectPanel(panel){state.panel=panel;for(const button of document.querySelectorAll('[data-panel]'))button.classList.toggle('active',button.dataset.panel===panel);for(const value of ['tools','ocr','history'])$(value+'Panel').classList.toggle('hidden',panel!==value);}
+function renderHistory(){$('history').innerHTML='';for(const item of [...state.page.history].reverse()){const div=document.createElement('div');const chainTag=item.metadata?.non_destructive?`<small>链版本 ${item.metadata.chain_revision} · 从原图非破坏性重算</small>`:'';div.innerHTML=`<b>${escapeHtml(names[item.operation]||item.operation)}</b><small>${new Date(item.time).toLocaleString('zh-CN')}</small>${chainTag}<button>恢复此版本</button>`;div.querySelector('button').onclick=()=>busy('正在恢复历史版本…',async()=>{await api('/pages/'+state.page.id+'/restore','POST',{history_id:item.id});await reloadCurrent();toast(item.metadata?.recipe_snapshot?'已恢复该版本对应的完整处理链':'已恢复该历史图像');});$('history').append(div);}if(!state.page.history.length)$('history').innerHTML='<p class="hint">还没有图像处理记录，原图已安全保存。</p>';}
+function renderRegions(){const stale=state.page.regions.some(r=>r.stale);$('regions').innerHTML=state.page.regions.map(r=>`<a href="/api/pages/${state.page.id}/regions/${r.id}" download class="${r.stale?'stale-link':''}">↓ ${escapeHtml(r.name)} · ${r.rect[2]} × ${r.rect[3]}${r.stale?' · 链已变化，请重新提取':''}</a>`).join('');if(stale)toast('有提取区域基于旧的处理链，已标记待重新提取',true);}
+function stageName(stage){return {geometry:'几何',background:'光照背景',color:'色彩',cleanup:'清理'}[stage]||stage;}
+function renderChain(){
+ const box=$('chainList');if(!box)return;
+ const chain=state.chain;
+ if(!chain){box.innerHTML='<p class="hint">处理链不可用。</p>';return;}
+ if(!chain.nodes.length){box.innerHTML='<p class="hint">还没有处理节点。在左侧确认透视、光照、色彩或清理后，节点会按顺序出现在这里；最终图像始终从原图重算。</p>';$('chainWarnings').innerHTML='';return;}
+ const colorBadge=chain.color_available?'<span class="chain-ok">彩色信息可用</span>':'<span class="chain-warn">彩色已在上游丢失</span>';
+ box.innerHTML=`<p class="hint">${colorBadge} · ${chain.active_count}/${chain.node_count} 个节点参与重算 · 链版本 ${chain.chain_revision}</p>`+chain.nodes.map((node,i)=>{
+  const paramText=Object.entries(node.params).map(([k,v])=>`${escapeHtml(k)}=${escapeHtml(v)}`).join('，');
+  const flags=[node.loses_color?'<em class="flag loss">丢色</em>':'',node.needs_color?'<em class="flag need">需彩色</em>':'',node.status==='inapplicable'?'<em class="flag dead">不适用</em>':''].join('');
+  return `<div class="chain-node ${node.status==='inapplicable'?'inapplicable':''}" data-node="${node.id}">
+   <div class="chain-node-head"><b>${i+1}. ${escapeHtml(node.label)}</b><span class="tag">${stageName(node.stage)}</span>${flags}</div>
+   <small>${escapeHtml(paramText)||'无参数'}</small>
+   <div class="chain-node-actions">
+    <button data-act="edit" data-id="${node.id}">改参数</button>
+    <button data-act="remove" data-id="${node.id}">移除</button>
+    ${node.status==='inapplicable'?`<button data-act="recompute" data-id="${node.id}">显式重算</button>`:''}
+   </div></div>`;
+ }).join('');
+ const warnings=chain.applicability||[];
+ $('chainWarnings').innerHTML=warnings.map(w=>`<p class="chain-warning">⚠ ${escapeHtml(w.message)}（节点 ${w.index+1}）<br><button data-fix-index="${w.index}">定位节点</button></p>`).join('');
+ box.querySelectorAll('button[data-act]').forEach(button=>button.onclick=()=>chainNodeAction(button.dataset.act,button.dataset.id));
+ box.querySelectorAll('button[data-fix-index]').forEach(button=>button.onclick=()=>{const node=chain.nodes[Number(button.dataset.fixIndex)];if(node){const el=box.querySelector(`[data-node="${node.id}"]`);el?.scrollIntoView({behavior:'smooth',block:'center'});el?.classList.add('flash');setTimeout(()=>el?.classList.remove('flash'),1200);}});
+}
+function draftNodes(){
+ if(!state.chainDraft){state.chainDraft=state.chain.nodes.map(n=>({id:n.id,operation:n.operation,params:JSON.parse(JSON.stringify(n.params)),status:n.status}));}
+ return state.chainDraft;
+}
+async function chainNodeAction(act,nodeId){
+ const page=requirePage();
+ if(act==='remove'){
+  await busy('正在从处理链移除节点并重算…',async()=>{
+   await api('/pages/'+page.id+'/chain/nodes/'+nodeId,'DELETE',{revision:page.revision});
+   state.chainDraft=null;await reloadCurrent();toast('节点已移除，图像已从原图按剩余链重算');
+  });
+  return;
+ }
+ const node=state.chain.nodes.find(n=>n.id===nodeId);
+ if(!node)return;
+ if(act==='recompute'){
+  await busy('正在核对重算依据…',async()=>{
+   try{await api('/pages/'+page.id+'/chain/nodes/'+nodeId+'/recompute','POST',{revision:page.revision});state.chainDraft=null;await reloadCurrent();toast('节点已按当前上游重新计算');}
+   catch(error){toast(error.message,true);}
+  });
+  return;
+ }
+ const fields=Object.entries(node.params).map(([key,value])=>`<label>${escapeHtml(key)}</label><input name="${escapeHtml(key)}" value="${escapeHtml(value)}">`).join('');
+ form('修改节点：'+node.label,`<p class="hint">只修改该节点，其余已确认节点原样保留；系统会从原图重算整条链。${node.loses_color?'该节点可能丢失颜色，下游需要彩色的节点会被标记为不适用。':''}</p>${fields}`,async values=>{
+  const params={};for(const [key,value] of Object.entries(values)){params[key]=Number.isNaN(Number(value))?value:Number(value);}
+  const result=await api('/pages/'+page.id+'/chain/nodes/'+nodeId,'PATCH',{params,revision:page.revision});
+  state.chainDraft=null;await reloadCurrent();
+  if(result.applicability?.length){toast('参数已保存，但有 '+result.applicability.length+' 个下游节点不再适用，已在处理链面板标出',true);selectPanel('chain');}
+  else toast('节点参数已更新，整条链已从原图重算');
+ });
+}
+async function previewChain(){
+ const page=requirePage();const nodes=draftNodes().map(n=>({operation:n.operation,params:n.params}));
+ await busy('正在从原图重算预览…',async()=>{
+  const result=await api('/pages/'+page.id+'/chain/preview','POST',{nodes});
+  state.chainPreview=result;
+  $('chainPreviewBox').style.display='block';
+  $('chainPreviewImage').src=result.preview_url+'?t='+Date.now();
+  $('chainPreviewMeta').textContent=`预览尺寸 ${result.width} × ${result.height} · 此结果尚未写入页面，确认后才会替换处理结果`;
+  $('chainPreviewWarnings').innerHTML=result.applicability.length?result.applicability.map(w=>`<p class="chain-warning">⚠ ${escapeHtml(w.message)}（节点 ${w.index+1}）</p>`).join(''):(result.color_available?'<p class="hint">✓ 所有节点对当前输入都有适用依据。</p>':'<p class="chain-warning">⚠ 彩色信息已在链中丢失，切回彩色无法恢复原图颜色。</p>');
+ });
+}
+async function commitChain(){
+ const page=requirePage();
+ const nodes=(state.chainPreview?state.chainPreview.nodes:draftNodes()).map(n=>({id:n.id,operation:n.operation,params:n.params,status:n.status==='inapplicable'?'inapplicable':'active'}));
+ await busy('正在确认处理链并重算最终图像…',async()=>{
+  const result=await api('/pages/'+page.id+'/chain/commit','POST',{nodes,policy:'recompute',revision:page.revision});
+  state.chainDraft=null;state.chainPreview=null;$('chainPreviewBox').style.display='none';
+  await reloadCurrent();
+  if(result.applicability?.length){toast('处理链已确认；'+result.applicability.length+' 个节点依据不足已标记保留，未参与重算',true);selectPanel('chain');}
+  else toast('处理链已确认，预览、最终图像与识别状态对应同一链版本');
+ });
+}
+function bindChainControls(){
+ $('chainPreview').onclick=()=>previewChain().catch(e=>toast(e.message,true));
+ $('chainCommit').onclick=()=>commitChain().catch(e=>toast(e.message,true));
+ $('chainPreviewCancel').onclick=()=>{state.chainPreview=null;$('chainPreviewBox').style.display='none';};
+}
+function selectPanel(panel){state.panel=panel;for(const button of document.querySelectorAll('[data-panel]'))button.classList.toggle('active',button.dataset.panel===panel);for(const value of ['tools','chain','ocr','history'])$(value+'Panel').classList.toggle('hidden',panel!==value);if(panel==='chain')renderChain();}
 document.querySelectorAll('[data-panel]').forEach(button=>button.onclick=()=>selectPanel(button.dataset.panel));
 document.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>{state.view=button.dataset.view;document.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('active',b===button));$('previewArea').classList.toggle('compare',state.view==='compare');if(state.page)openPage(state.page.id).catch(e=>toast(e.message,true));applyZoom();});
 document.querySelectorAll('[data-mode]').forEach(button=>button.onclick=()=>{state.mode=button.dataset.mode;document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('active',b===button));});
 $('strength').oninput=()=>$('strengthValue').textContent=$('strength').value+'%';$('threshold').oninput=()=>$('thresholdValue').textContent=$('threshold').value;
-$('illumination').onclick=()=>processPage('illumination',{strength:Number($('strength').value)/100});
-$('applyColor').onclick=()=>processPage('color',{mode:state.mode,threshold:Number($('threshold').value),block_size:Number($('blockSize').value),constant:Number($('constant').value)});
+$('illumination').onclick=()=>busy('正在从原图重算光照修复…',async()=>{
+ const page=requirePage();
+ const result=await api('/pages/'+page.id+'/chain/step','POST',{operation:'illumination',params:{strength:Number($('strength').value)/100},revision:page.revision});
+ state.chainDraft=null;await reloadCurrent();
+ toast(result.changed?'光照参数已更新，已确认的几何校正与后续节点原样保留':'参数未变化，未产生新版本');
+});
+$('applyColor').onclick=()=>busy('正在从原图重算色彩模式…',async()=>{
+ const page=requirePage();
+ const params={mode:state.mode,threshold:Number($('threshold').value),block_size:Number($('blockSize').value),constant:Number($('constant').value)};
+ const result=await api('/pages/'+page.id+'/chain/color','POST',{params,revision:page.revision});
+ state.chainDraft=null;await reloadCurrent();
+ if(result.applicability?.length){toast('色彩已更新；有 '+result.applicability.length+' 个节点因颜色丢失不再适用，已在处理链面板标出',true);selectPanel('chain');}
+ else toast(result.changed?'色彩模式已更新，结果从原图按链重算，未在旧稿上叠加':'参数未变化，未产生新版本');
+});
 $('rotateLeft').onclick=()=>processPage('rotate',{angle:90});$('rotateRight').onclick=()=>processPage('rotate',{angle:-90});$('deskew').onclick=()=>processPage('deskew');
 $('detectEdges').onclick=()=>busy('正在检测纸张轮廓…',async()=>{const page=requirePage();if(state.view==='original')throw Error('请先切换到处理结果视图');const result=await api('/pages/'+page.id+'/edges');state.corners=result.points;state.region=null;drawOverlay();toast(result.detected?'纸张轮廓已检测，可拖动四角调整':'未发现可靠轮廓，请手动调整四角');});
 $('applyPerspective').onclick=()=>{if(!state.corners){toast('请先检测边缘，然后调整四角',true);return;}processPage('perspective',{points:state.corners});};
 $('selectRegion').onclick=()=>{if(!state.page)return toast('请先选择页面',true);state.drawRegion=!state.drawRegion;state.corners=null;$('selectRegion').classList.toggle('active',state.drawRegion);toast(state.drawRegion?'请在处理预览中拖动框选区域':'已退出框选');drawOverlay();};
-$('denoise').onclick=()=>processPage('denoise',{area:Number($('noiseArea').value),median:Number($('median').value),region:state.region});
+$('denoise').onclick=()=>busy('正在从原图重算污点清理…',async()=>{
+ const page=requirePage();
+ const params={area:Number($('noiseArea').value),median:Number($('median').value),region:state.region};
+ // 整页去污是可调单例步骤，就地改参重算；带选区的去污针对具体区域，作为独立节点追加。
+ if(!state.region){
+  const result=await api('/pages/'+page.id+'/chain/step','POST',{operation:'denoise',params,revision:page.revision});
+  state.chainDraft=null;await reloadCurrent();
+  toast(result.changed?'去污参数已更新，已确认的几何与色彩节点原样保留':'参数未变化，未产生新版本');
+ }else{
+  await api('/pages/'+page.id+'/process','POST',{operation:'denoise',params,revision:page.revision});
+  await reloadCurrent();toast('选区去污已作为节点加入处理链');
+ }
+});
 $('cropRegion').onclick=()=>state.region?processPage('crop',{region:state.region}):toast('请先框选区域',true);
 $('extractRegion').onclick=()=>{if(!state.region)return toast('请先框选区域',true);form('提取区域','<label>区域名称</label><input name="name" value="文档插图" required><label>区域类型</label><select name="kind"><option value="illustration">插图</option><option value="text">正文</option><option value="other">其他</option></select>',async value=>{await api('/pages/'+requirePage().id+'/regions','POST',{...value,region:state.region});await openPage(state.page.id);toast('区域已提取，点击面板中的链接下载');});};
 $('restoreOriginal').onclick=()=>busy('正在恢复原图…',async()=>{await api('/pages/'+requirePage().id+'/restore','POST',{});await reloadCurrent();toast('原图已恢复，处理历史仍保留');});
@@ -77,6 +185,7 @@ $('closeModal').onclick=()=>{$('modal').close();};
 $('modal').addEventListener('click',event=>{if(event.target===$('modal')){const rect=$('modal').getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)$('modal').close();}});
 async function poll(){try{const tasks=await api('/tasks');const active=tasks.filter(t=>['queued','running','cancelling'].includes(t.status));$('taskCount').textContent=active.length;const token=tasks.map(t=>t.id+':'+t.status+':'+t.done).join('|');if(taskTimer&&taskTimer!==token){if($('modal').open&&$('modalTitle').textContent==='批量任务')await showTasks();if(!active.length&&state.document&&!isBusy)await reloadCurrent();}taskTimer=token;}catch(error){console.warn(error.message);}}
 busy('正在打开本地文档库…',async()=>{await refresh();if(state.workspace.documents.length)await openDocument(state.workspace.documents[0].id);});
+bindChainControls();
 setInterval(poll,2000);
 $('advancedMenu').onclick=()=>{if(!state.document)return;modal('文档工具箱',`<div class="mode-grid advanced-grid"><button id="storageTool">存储与清理</button><button id="qualityTool">质量诊断</button><button id="reviewTool">待复核文字</button><button id="pipelineTool">自动工作流</button><button id="checkpointTool">文档快照</button><button id="sourceTool">下载原始文件</button><button id="reportTool">数字化报告</button><button id="backupTool">备份工作区</button><button id="blankTool">插入空白页</button><button id="filterTool">高级图像滤镜</button><button id="preflightTool">导出前检查</button><button id="replaceTool">批量替换文字</button><button id="interchangeTool">交换格式导出</button></div>`);
 $('storageTool').onclick=()=>showStorage().catch(e=>toast(e.message,true));$('qualityTool').onclick=()=>busy('正在分析图像质量…',async()=>{const result=await api('/pages/'+requirePage().id+'/recommendations');modal('页面质量诊断',`<table class="modal-table"><tr><td>光照均匀度</td><td>${result.illumination.score} / 100</td></tr><tr><td>清晰度参考分数</td><td>${result.sharpness.score} / 100</td></tr><tr><td>孤立小点</td><td>${result.components.specks}</td></tr></table><p class="help-text">${result.warnings.map(escapeHtml).join('<br>')||'未发现明显风险。'}</p>${result.steps.map(step=>`<p class="hint">建议：${escapeHtml(step.reason)}</p>`).join('')}`);});

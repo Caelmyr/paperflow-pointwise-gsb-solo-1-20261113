@@ -74,6 +74,21 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 - `POST /pages/{id}/split-spread`：axis、ratio、overlap，拆开跨页扫描。
 - `POST /pages/concatenate`：page_ids、target_id、orientation、gap，拼接页面。
 
+## 非破坏性处理链（recipe）
+
+同一次扫描调参的依据是一条有序、可回看的处理链。每个确认过的操作成为链上节点（含操作、参数、阶段、是否丢色/需彩色），最终图像始终从原图按链重算，而不是在已经丢失信息的中间稿上继续叠加。页面记录中的 `recipe`、`chain_revision`、`rendered_revision` 描述链本身；预览、最终图像（current）、提取区域与 OCR 有效状态都绑定到同一个 `chain_revision`。
+
+- `GET /pages/{id}/chain`：返回节点列表、`color_available`（彩色信息是否仍可用）、`applicability` 适用性差异、链版本与渲染状态。节点 `status` 为 `active` 或 `inapplicable`。
+- `POST /pages/{id}/chain/preview`，体 `{"nodes":[...]}`：对候选链做不落盘重算，返回 `preview_url`、尺寸与适用性差异；不改变已确认链。
+- `POST /pages/{id}/chain/commit`，体 `{"nodes":[...],"policy":"recompute","revision":N}`：确认候选链并从原图整体重算。依据不足（如上游已灰度/二值化、节点却需要彩色）的节点标记为 `inapplicable` 并原样保留，不参与重算，差异在 `applicability` 中返回，绝不静默删除或假装恢复颜色。
+- `PATCH /pages/{id}/chain/nodes/{node_id}`：只修改一个节点的参数/操作，其余已确认节点保留并整体重算。
+- `DELETE /pages/{id}/chain/nodes/{node_id}`：移除节点后从原图重算。
+- `POST /pages/{id}/chain/nodes/{node_id}/recompute`：显式重算被标记的节点；若上游仍缺少其所需信息（如颜色已丢）返回 409 `basis_lost`。
+- `POST /pages/{id}/chain/color`：色彩模式专用入口。已确认的 `color` 节点就地改参并从原图重算，灰度/黑白后切回彩色会真实恢复原图颜色，不会得到“仍是黑白”的结果，也不会堆叠多个丢色节点。
+- `POST /pages/{id}/chain/step`：光照（illumination）、整页去污（denoise）的就地调参入口，相同参数重复确认不产生新版本。
+
+信息丢失规则：`color` 的 `gray/binary/adaptive`、`sauvola`、`morph_text`、`enhance`、`flatten_background`、`remove_lines` 等会丢色；`white_balance`、`contrast` 需要彩色输入。丢色节点之后的需彩色节点会被标记不适用。几何裁切等改变画面尺寸的节点，还可能使引用固定坐标的下游节点在运行期失效（`runtime_inapplicable`）：预览会直接报错说明，确认提交时该节点标记为不适用并跳过、其余节点照常重算，不会让整条链崩溃。历史条目保存 `recipe_snapshot`，恢复历史版本即恢复那条完整链；恢复原图则清空链但保留全部历史。旧版本无链字段的页面按空链读取，不修改旧数据。
+
 ## 区域、历史、快照
 
 `POST /pages/{id}/regions` 参数name、kind（text/illustration/other）、region。返回区域id，下载 `GET /pages/{id}/regions/{region_id}`。`POST /pages/{id}/restore` 参数空对象恢复原图，或传history_id恢复该版本。`GET /pages/{id}` 返回完整图像与OCR历史。

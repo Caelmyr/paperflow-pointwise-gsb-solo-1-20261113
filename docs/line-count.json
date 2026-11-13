@@ -43,7 +43,7 @@
     },
     {
       "file": "paperflow/documents.py",
-      "effective_lines": 402
+      "effective_lines": 710
     },
     {
       "file": "paperflow/exports.py",
@@ -86,6 +86,10 @@
       "effective_lines": 206
     },
     {
+      "file": "paperflow/recipes.py",
+      "effective_lines": 156
+    },
+    {
       "file": "paperflow/reports.py",
       "effective_lines": 170
     },
@@ -103,13 +107,13 @@
     },
     {
       "file": "paperflow/web.py",
-      "effective_lines": 262
+      "effective_lines": 303
     },
     {
       "file": "run.py",
       "effective_lines": 34
     }
   ],
-  "total": 5065,
+  "total": 5570,
   "passes_5000": true
 }

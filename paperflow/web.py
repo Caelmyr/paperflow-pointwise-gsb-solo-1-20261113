@@ -198,6 +198,57 @@ def create_app(data_root=None, demo=True):
         value = body()
         return jsonify(documents.apply(identifier, value.get('operation'), value.get('params', {}), value.get('revision')))
 
+    @app.get('/api/pages/<identifier>/chain')
+    def page_chain(identifier):
+        return jsonify(documents.chain(identifier))
+
+    @app.post('/api/pages/<identifier>/chain/step')
+    def chain_step(identifier):
+        value = body()
+        result = documents.chain_upsert_step(identifier, value.get('operation'), value.get('params', {}), value.get('revision'))
+        return jsonify(result)
+
+    @app.post('/api/pages/<identifier>/chain/color')
+    def chain_color(identifier):
+        value = body()
+        result = documents.chain_upsert_color(identifier, value.get('params', {}), value.get('revision'))
+        return jsonify(result)
+
+    @app.post('/api/pages/<identifier>/chain/preview')
+    def chain_preview(identifier):
+        return jsonify(documents.chain_preview(identifier, body()))
+
+    @app.post('/api/pages/<identifier>/chain/commit')
+    def chain_commit(identifier):
+        value = body()
+        result = documents.chain_commit(identifier, value, value.get('revision'))
+        return jsonify(result)
+
+    @app.patch('/api/pages/<identifier>/chain/nodes/<node_id>')
+    def chain_update_node(identifier, node_id):
+        value = body()
+        result = documents.chain_update_node(identifier, node_id, value, value.get('revision'))
+        return jsonify(result)
+
+    @app.delete('/api/pages/<identifier>/chain/nodes/<node_id>')
+    def chain_remove_node(identifier, node_id):
+        value = request.get_json(silent=True) or {}
+        return jsonify(documents.chain_remove_node(identifier, node_id, value.get('revision')))
+
+    @app.post('/api/pages/<identifier>/chain/nodes/<node_id>/recompute')
+    def chain_recompute_node(identifier, node_id):
+        value = body()
+        return jsonify(documents.chain_recompute_node(identifier, node_id, value.get('params'), value.get('revision')))
+
+    @app.get('/api/previews/<identifier>')
+    def chain_preview_file(identifier):
+        # 预览文件仅允许读取 previews 目录，store.resolve 会拒绝越界引用。
+        from werkzeug.utils import secure_filename
+        safe = 'previews/' + secure_filename(identifier)
+        path = store.resolve(safe)
+        require(path.is_file(), '预览不存在或已过期', 404)
+        return send_file(path, conditional=True)
+
     @app.post('/api/pages/<identifier>/restore')
     def restore(identifier):
         return jsonify(documents.restore(identifier, body().get('history_id')))

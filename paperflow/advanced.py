@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, Response, jsonify, request, send_file
+
+import cv2
 
 from . import analysis, layout
 from .archive import Archives
@@ -14,6 +16,7 @@ from .pipelines import Pipelines
 from .preferences import Preferences
 from .reports import Reports
 from .review import Review
+from .stroke_sessions import StrokeSessions
 
 
 def register_advanced(app, store, documents, exporter):
@@ -57,6 +60,32 @@ def register_advanced(app, store, documents, exporter):
     @routes.get('/pages/<page_id>/recommendations')
     def page_recommendations(page_id):
         return jsonify(analysis.recommend(image(page_id)))
+
+    stroke_sessions = StrokeSessions(store)
+    app.extensions['stroke_sessions'] = stroke_sessions
+
+    @routes.post('/pages/<page_id>/stroke/preview')
+    def stroke_preview(page_id):
+        return jsonify(stroke_sessions.preview(page_id, body())), 201
+
+    @routes.get('/stroke-sessions/<session_id>/image')
+    def stroke_preview_image(session_id):
+        kind = request.args.get('kind', 'overlay')
+        data, mime = stroke_sessions.image(session_id, kind)
+        ok, encoded = cv2.imencode('.png', data)
+        require(ok, '预览图编码失败', 500)
+        return Response(encoded.tobytes(), mimetype=mime,
+                        headers={'Cache-Control': 'no-store'})
+
+    @routes.post('/pages/<page_id>/stroke/confirm')
+    def stroke_confirm(page_id):
+        values = body()
+        require(isinstance(values.get('session_id'), str) and values['session_id'], '缺少预览会话标识')
+        return jsonify(stroke_sessions.confirm(page_id, values['session_id']))
+
+    @routes.post('/stroke-sessions/<session_id>/discard')
+    def stroke_discard(session_id):
+        return jsonify(stroke_sessions.discard(session_id))
 
     @routes.post('/catalog/query')
     def catalog_query():

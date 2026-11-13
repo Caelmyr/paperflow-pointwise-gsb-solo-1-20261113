@@ -199,8 +199,8 @@ def build_registry():
         'mode': Enumeration(('white', 'inpaint'), 'white'),
         'radius': Numeric(1, 20, 5),
     })
-    registry['morph_text'] = Operation('文字形态优化', 'cleanup', {
-        'mode': Enumeration(('thicken', 'thin', 'close', 'open'), 'thicken'),
+    registry['morph_text'] = Operation('文字形态优化（兼容旧入口）', 'cleanup', {
+        'mode': Enumeration(('thicken', 'thin'), 'thicken'),
         'size': Numeric(1, 7, 2, integer=True),
         'iterations': Numeric(1, 3, 1, integer=True),
     })

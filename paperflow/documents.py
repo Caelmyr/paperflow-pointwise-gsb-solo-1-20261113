@@ -199,6 +199,58 @@ class Documents:
                 self.store.event(state, '图像处理', page_id, {'operation': operation})
             return self.store.get('pages', page_id)
 
+    def commit_stroke(self, page_id, session):
+        """把笔迹调整预览会话中已确认的同一份结果落盘（预览与保存严格一致）。"""
+        with self.page_lock(page_id):
+            page = self.store.get('pages', page_id)
+            require(session['page_revision'] == page['revision'],
+                    '页面在预览后发生变化，请重新预览再确认', 409)
+            result = session['result']
+            imaging.validate_image(result)
+            path = self.store.new_file('processed')
+            thumb_path = self.store.new_file('thumbs', '.jpg')
+            imaging.save_image(path, result)
+            imaging.thumbnail(thumb_path, result)
+            stats = session['stats']
+            with self.store.transaction() as state:
+                current = state['pages'].get(page_id)
+                require(current is not None, '页面已被删除', 409)
+                require(current['revision'] == page['revision'], '页面版本冲突', 409)
+                current['history'].append({
+                    'id': identity('history'),
+                    'time': now(),
+                    'operation': 'stroke_adjust',
+                    'params': session['settings'],
+                    'metadata': {
+                        'pixels_added': stats['pixels_added'],
+                        'pixels_removed': stats['pixels_removed'],
+                        'components_adjusted': stats['components_adjusted'],
+                        'components_protected': stats['components_protected'],
+                        'stroke_width': stats['stroke_width'],
+                        'warnings': stats['warnings'],
+                        'baseline': session['baseline'],
+                    },
+                    'before': current['current'],
+                    'after': self.store.relative(path),
+                    'before_width': current['width'],
+                    'before_height': current['height'],
+                })
+                current['current'] = self.store.relative(path)
+                current['thumbnail'] = self.store.relative(thumb_path)
+                current['width'] = result.shape[1]
+                current['height'] = result.shape[0]
+                current['quality'] = imaging.quality(result)
+                current['revision'] += 1
+                current['updated_at'] = now()
+                if current['ocr']:
+                    current['ocr']['stale'] = True
+                self.store.event(state, '笔迹粗细调整', page_id, {
+                    'mode': stats['mode'],
+                    'added': stats['pixels_added'],
+                    'removed': stats['pixels_removed'],
+                })
+            return self.store.get('pages', page_id)
+
     def restore(self, page_id, history_id=None):
         with self.page_lock(page_id):
             page = self.store.get('pages', page_id)

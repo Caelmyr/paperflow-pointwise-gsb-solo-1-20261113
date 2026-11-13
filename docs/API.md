@@ -80,6 +80,22 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 
 `POST /documents/{id}/checkpoints` 保存name命名快照；`GET /documents/{id}/checkpoints` 列表；`GET /checkpoints/{id}/diff` 差异；`POST /checkpoints/{id}/restore` 恢复为新文档（可选name、collection_id）。
 
+## 笔迹粗细调整（预览—确认，不做整页二值化）
+
+旧的 `morph_text` 高级滤镜会把整页（含彩图、有色纸底）一起二值化成黑白，已停用该实现；保留操作名仅为兼容历史，内部改为彩色笔迹调整。新流程使用下列接口，只改写指定正文区域内的中性色笔迹，保留原墨色、抗锯齿轮廓与纸面，彩图、印章、细线表格和未选纸面逐像素不变。
+
+1. `POST /pages/{id}/stroke/preview` 生成预览。参数：
+   - `mode`：`thicken` 加粗 / `thin` 细化；
+   - `delta`：粗细变化量（0–6 px，支持小数）；`sensitivity`：笔迹灵敏度 0–1；`saturation`：彩色排除阈值 0–255，部件中位饱和度高于此值视为彩图/印章；
+   - `min_gap`：相邻笔画最小保留间距，触发连字风险的部件会自动收窄增长；`feather`：分区边界羽化；`direction`：`both`/`horizontal`/`vertical`；
+   - `baseline`：`current`（当前确认图，默认）或 `original`（原始输入）。每次预览都从该基线重新计算，反复调参不叠加；
+   - `zones`：分区数组，每项含 `rect=[x,y,宽,高]`、`name`、`action`（`adjust`/`protect`/`keep`），adjust 可带分区级 `delta`、`direction`。分区以带羽化的像素场融合，同一笔画跨边界粗细连续；`protect` 整体保护相交部件，`keep` 区域逐像素保留；
+   - 可传 `session_id` 复用会话；页面版本变化后复用返回 409。
+   - 返回 `session_id` 与 `stats`：拟增加/减去像素数、调整与受保护部件数、调整前后笔画宽度中位数、封口（`enclosed_cavity`）与连字（`adjacent_gap`）告警计数。
+2. `GET /stroke-sessions/{session_id}/image?kind=overlay|result|diff` 取回 PNG：`overlay` 红绿蓝差异叠加（绿=拟增加、红=拟减去、蓝=受保护），`result` 调整结果，`diff` 增减遮罩。前端可在 1:1 实际尺度下检查。
+3. `POST /pages/{id}/stroke/confirm`，体 `{"session_id":...}`，把会话中已算好的同一份结果落盘为 `stroke_adjust` 历史版本；保存、区域提取与导出共用该确认图。会话一次性有效，重复确认或页面已变化返回 409。
+4. `POST /stroke-sessions/{session_id}/discard` 放弃预览，不改动页面。
+
 ## 其他服务
 
 质量分析 `/pages/{id}/analysis`，版面 `/layout`，处理前后差异 `/comparison`，建议 `/recommendations`；元数据 `/documents/{id}/metadata`；检索分面 `/catalog/facets`；POST `/catalog/query` 支持分类、标签、作者、集合、OCR、分页排序；复核队列 `/review/queue`；低置信度 `/pages/{id}/low-confidence`；页面批注 `/notes`；工作流 `/pipelines` 与 `/pipeline-runs`；导出预检 `/documents/{id}/preflight`；完整性 `/audit/integrity?deep=1`；空间 `/audit/storage`；来源 `/sources`；备份 `/backups`；归档导入 multipart `/archives/import`（file、collection_id）；用户设置 `/preferences`；会话 `/session`。
@@ -164,6 +180,8 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 | GET | `/api/pages/<page_id>/provenance` |
 | GET | `/api/pages/<page_id>/recommendations` |
 | POST | `/api/pages/<page_id>/review` |
+| POST | `/api/pages/<page_id>/stroke/confirm` |
+| POST | `/api/pages/<page_id>/stroke/preview` |
 | POST | `/api/pages/<page_id>/split-spread` |
 | POST | `/api/pages/concatenate` |
 | POST | `/api/pages/copy` |
@@ -191,6 +209,8 @@ kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导�
 | GET | `/api/sources` |
 | GET | `/api/sources/<identifier>/download` |
 | GET | `/api/sources/<identifier>/verify` |
+| GET | `/api/stroke-sessions/<session_id>/image` |
+| POST | `/api/stroke-sessions/<session_id>/discard` |
 | POST | `/api/tasks` |
 | GET | `/api/tasks` |
 | GET | `/api/tasks/<identifier>` |

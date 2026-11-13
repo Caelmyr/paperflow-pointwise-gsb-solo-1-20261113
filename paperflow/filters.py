@@ -126,20 +126,24 @@ def erase(image, params):
 
 
 def morph_text(image, params):
-    mode = choice(params.get('mode', 'thicken'), '文字形态', ('thicken', 'thin', 'close', 'open'))
+    """兼容旧入口的文字形态调整：委托给彩色笔迹调整管线，不再整页二值化。
+
+    新功能请使用 /pages/{id}/stroke/preview 与 /stroke/confirm，
+    支持选区、分区保护、差异预览与确认后落盘。此处保留操作名以兼容
+    既有工作流与历史记录，输出保持原笔迹颜色和纸面。
+    """
+    from . import stroke
+    legacy_mode = params.get('mode', 'thicken')
+    mode = 'thin' if legacy_mode in ('thin', 'open') else 'thicken'
     size = number(params.get('size', 2), '形态窗口', 1, 7, True)
     iterations = number(params.get('iterations', 1), '形态次数', 1, 3, True)
-    mask = cv2.threshold(gray(image), 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
-    kernel = np.ones((size, size), np.uint8)
-    if mode == 'thicken':
-        mask = cv2.dilate(mask, kernel, iterations=iterations)
-    elif mode == 'thin':
-        mask = cv2.erode(mask, kernel, iterations=iterations)
-    elif mode == 'close':
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=iterations)
-    else:
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=iterations)
-    return bgr(255 - mask)
+    settings = stroke.validate_settings({
+        'mode': mode,
+        'delta': float(size) * 0.75 * iterations,
+        'sensitivity': 0.5,
+    }, image)
+    result, _, _ = stroke.adjust(image, settings)
+    return result
 
 
 def sauvola(image, params):

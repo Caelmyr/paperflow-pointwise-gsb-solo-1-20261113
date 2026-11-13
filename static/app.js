@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const state = {workspace:null,document:null,page:null,collection:null,selected:new Set(),selectedDocs:new Set(),view:'current',panel:'tools',mode:'adaptive',corners:null,region:null,drawRegion:false,drag:null,boxes:true,zoom:1};
-const names = {perspective:'透视校正',rotate:'旋转页面',deskew:'自动纠偏',illumination:'修复光照',color:'色彩转换',denoise:'污点清理',crop:'区域裁切',enhance:'扫描增强',restore:'恢复图像',ocr:'文字识别'};
+const names = {perspective:'透视校正',rotate:'旋转页面',deskew:'自动纠偏',illumination:'修复光照',color:'色彩转换',denoise:'污点清理',crop:'区域裁切',enhance:'扫描增强',restore:'恢复图像',ocr:'文字识别',stroke_adjust:'笔迹粗细调整',morph_text:'文字形态优化'};
 const statuses = {queued:'等待中',running:'正在处理',cancelling:'正在取消',cancelled:'已取消',completed:'已完成',partial:'部分失败',failed:'失败',interrupted:'服务重启中断'};
 let toastTimer, taskTimer, isBusy=false;
 function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -110,5 +110,133 @@ $('reviewMenu').onclick=()=>busy('正在读取复核记录…',async()=>{
 });
 
 $('loadRecovery').onclick=()=>busy('正在载入恢复练习…',async()=>{const doc=await api('/demo/recovery','POST',{});await refresh();await openDocument(doc.id);toast('真实中断资料已载入，请在任务面板核对后重试');});
+
+/* ================= 笔迹粗细调整工作台 ================= */
+const strokeState={sessionId:null,zones:[],stats:null,previewKind:'overlay',viewScale:1,pageId:null,pageRevision:null};
+function strokeRect(){return state.region&&state.region[2]>=32&&state.region[3]>=32?[...state.region]:null;}
+function strokePayload(extra){
+  const payload={mode:strokeState.mode,delta:Number(strokeState.delta.value),sensitivity:Number(strokeState.sensitivity.value)/100,
+    saturation:Number(strokeState.saturation.value),min_gap:Number(strokeState.minGap.value),feather:Number(strokeState.feather.value),
+    direction:strokeState.direction,baseline:strokeState.baseline,zones:strokeState.zones.map(z=>({rect:z.rect,name:z.name,action:z.action,
+      ...(z.action==='adjust'?{delta:z.delta,direction:z.direction}:{}),})),...extra};
+  if(strokeState.sessionId)payload.session_id=strokeState.sessionId;
+  return payload;
+}
+function renderStrokeZones(){
+  const list=$('strokeZones');
+  list.innerHTML=strokeState.zones.map((z,i)=>`<div class="stroke-zone"><b>${escapeHtml(z.name)}</b><small>${z.rect.join(', ')} · ${z.action==='adjust'?'调整 '+z.delta+'px':z.action==='protect'?'保护':'保留原状'}</small><button data-zone-del="${i}">移除</button></div>`).join('')||'<p class="hint">未添加分区时对整页正文生效。</p>';
+  list.querySelectorAll('[data-zone-del]').forEach(btn=>btn.onclick=()=>{strokeState.zones.splice(Number(btn.dataset.zoneDel),1);renderStrokeZones();});
+}
+function strokeWarningText(stats){
+  const counts=stats.warnings?.counts||{};
+  const labels={enclosed_cavity:'含内部空腔的部件（加粗可能封口）',adjacent_gap:'相邻笔画间距小于保护值'};
+  const items=Object.entries(counts).map(([k,v])=>`${labels[k]||k}：${v} 个`);
+  return items.length?items.join('；'):'未检测到封口或连字风险';
+}
+async function refreshStrokePreview(){
+  const page=requirePage();
+  const result=await api('/pages/'+page.id+'/stroke/preview','POST',strokePayload({}));
+  strokeState.sessionId=result.session_id;strokeState.stats=result.stats;
+  const img=$('strokePreview');
+  img.src=`/api/stroke-sessions/${result.session_id}/image?kind=${strokeState.previewKind}&t=${Date.now()}`;
+  const s=result.stats;
+  $('strokeStats').innerHTML=`<div><span>拟增加像素</span><b class="add">${s.pixels_added}</b></div><div><span>拟减去像素</span><b class="remove">${s.pixels_removed}</b></div>
+    <div><span>受保护部件</span><b>${s.components_protected}</b></div><div><span>调整部件</span><b>${s.components_adjusted}</b></div>
+    <div><span>笔画宽度（前→后）</span><b>${s.stroke_width.before_median} → ${s.stroke_width.after_median} px</b></div>`;
+  $('strokeWarnings').textContent=strokeWarningText(s);
+  $('strokeConfirm').disabled=false;
+  applyStrokePreviewScale();
+}
+function applyStrokePreviewScale(){
+  const img=$('strokePreview');
+  const mode=strokeState.viewScale;
+  if(mode===1){img.style.width='';img.style.height='';img.style.maxWidth='none';}
+  else{img.style.maxWidth='100%';img.style.width='';img.style.height='';}
+  $('strokeScaleLabel').textContent=mode===1?'实际像素 100%':'适合窗口';
+}
+$('openStroke').onclick=()=>{
+  if(!state.page)return toast('请先选择页面',true);
+  // 同页再次打开时保留已建分区；切页或页面版本变化（如刚确认过）则重置会话。
+  if(strokeState.pageId!==state.page.id||strokeState.pageRevision!==state.page.revision){
+    strokeState.sessionId=null;strokeState.zones=[];strokeState.previewKind='overlay';strokeState.viewScale='fit';
+  }
+  strokeState.pageId=state.page.id;strokeState.pageRevision=state.page.revision;
+  modal('笔迹粗细调整',`
+  <div class="stroke-workbench">
+    <div class="stroke-controls">
+      <label>调整方向<select id="strokeMode"><option value="thicken">加粗</option><option value="thin">细化</option></select></label>
+      <label>整页变化量 <output id="strokeDeltaValue">1.5</output> px<input id="strokeDelta" type="range" min="0" max="6" step="0.1" value="1.5"></label>
+      <label>笔迹灵敏度 <output id="strokeSensitivityValue">50%</output><input id="strokeSensitivity" type="range" min="0" max="100" value="50"></label>
+      <div class="field-row"><label>彩色排除<input id="strokeSaturation" type="number" min="0" max="255" value="60"></label>
+      <label>最小间距<input id="strokeMinGap" type="number" min="0" max="20" step="0.1" value="1.5"></label></div>
+      <div class="field-row"><label>边界羽化<input id="strokeFeather" type="number" min="0" max="100" step="0.5" value="6"></label>
+      <label>笔画方向<select id="strokeDirection"><option value="both">各向同性</option><option value="horizontal">横向笔画</option><option value="vertical">竖向笔画</option></select></label></div>
+      <label>调整基线<select id="strokeBaseline"><option value="current">当前确认图（不叠加）</option><option value="original">原始输入</option></select></label>
+      <div class="stroke-zones-head"><b>分区</b><button id="strokeAddZone" type="button">把框选区域加为分区</button></div>
+      <div id="strokeZones" class="stroke-zones"><p class="hint">先在主预览中框选区域，再加为分区；可对每个分区单独调整、保护或保留原状。</p></div>
+      <div class="stroke-zone-form" id="strokeZoneForm"></div>
+      <button class="full" id="strokeRunPreview" type="button">生成 / 刷新差异预览</button>
+      <p class="hint">每次预览都从所选基线重新计算，反复调参不会叠加；确认前不会改动页面。</p>
+    </div>
+    <div class="stroke-preview-col">
+      <div class="row stroke-preview-bar">
+        <div class="segmented">
+          <button type="button" data-kind="overlay" class="active">差异叠加</button>
+          <button type="button" data-kind="result">调整结果</button>
+          <button type="button" data-kind="diff">增减遮罩</button>
+        </div>
+        <div class="row"><button type="button" id="strokeScaleFit">适合窗口</button><button type="button" id="strokeScale100">1:1 实际尺度</button><span id="strokeScaleLabel">适合窗口</span></div>
+      </div>
+      <div class="stroke-preview-scroll"><img id="strokePreview" alt="笔迹调整预览"></div>
+      <div id="strokeStats" class="stroke-stats"><p class="hint">填写参数后生成预览。</p></div>
+      <p id="strokeWarnings" class="hint">—</p>
+      <div class="row"><button class="primary" id="strokeConfirm" disabled>确认并保存这一版</button><button id="strokeDiscard" type="button">放弃预览</button></div>
+    </div>
+  </div>`);
+  strokeState.mode='thicken';strokeState.delta=$('strokeDelta');strokeState.sensitivity=$('strokeSensitivity');
+  strokeState.saturation=$('strokeSaturation');strokeState.minGap=$('strokeMinGap');strokeState.feather=$('strokeFeather');
+  strokeState.direction='both';strokeState.baseline='current';
+  $('strokeDelta').oninput=()=>$('strokeDeltaValue').textContent=$('strokeDelta').value;
+  $('strokeSensitivity').oninput=()=>$('strokeSensitivityValue').textContent=$('strokeSensitivity').value+'%';
+  $('strokeMode').onchange=e=>strokeState.mode=e.target.value;
+  $('strokeDirection').onchange=e=>strokeState.direction=e.target.value;
+  $('strokeBaseline').onchange=e=>strokeState.baseline=e.target.value;
+  $('strokeAddZone').onclick=()=>{
+    const rect=strokeRect();
+    if(!rect)return toast('请先关闭本窗口，在主预览中框选一个不小于 32×32 的区域',true);
+    const index=strokeState.zones.length;
+    strokeState.zones.push({rect,name:'分区'+(index+1),action:'adjust',delta:Number($('strokeDelta').value),direction:strokeState.direction});
+    renderStrokeZones();renderStrokeZoneEditor();toast('分区已加入，可在分区列表设置调整/保护/保留');
+  };
+  $('strokeRunPreview').onclick=()=>busy('正在计算笔迹增减像素…',refreshStrokePreview);
+  document.querySelectorAll('[data-kind]').forEach(btn=>btn.onclick=()=>{
+    strokeState.previewKind=btn.dataset.kind;
+    document.querySelectorAll('[data-kind]').forEach(b=>b.classList.toggle('active',b===btn));
+    if(strokeState.sessionId)$('strokePreview').src=`/api/stroke-sessions/${strokeState.sessionId}/image?kind=${strokeState.previewKind}&t=${Date.now()}`;
+  });
+  $('strokeScaleFit').onclick=()=>{strokeState.viewScale='fit';applyStrokePreviewScale();};
+  $('strokeScale100').onclick=()=>{strokeState.viewScale=1;applyStrokePreviewScale();};
+  $('strokeDiscard').onclick=()=>busy('正在放弃预览…',async()=>{
+    if(strokeState.sessionId)await api('/stroke-sessions/'+strokeState.sessionId+'/discard','POST',{});
+    strokeState.sessionId=null;$('modal').close();toast('预览已放弃，页面未改动');
+  });
+  $('strokeConfirm').onclick=()=>busy('正在保存确认结果…',async()=>{
+    if(!strokeState.sessionId)throw Error('请先生成预览');
+    await api('/pages/'+requirePage().id+'/stroke/confirm','POST',{session_id:strokeState.sessionId});
+    $('modal').close();await reloadCurrent();toast('笔迹调整已按预览结果保存，导出与提取使用同一版本');
+  });
+  renderStrokeZones();renderStrokeZoneEditor();
+};
+function renderStrokeZoneEditor(){
+  const host=$('strokeZoneForm');if(!host)return;
+  host.innerHTML=strokeState.zones.map((z,i)=>`<div class="stroke-zone-edit"><b>${escapeHtml(z.name)}</b>
+    <select data-zone-action="${i}"><option value="adjust"${z.action==='adjust'?' selected':''}>调整</option><option value="protect"${z.action==='protect'?' selected':''}>保护（不动）</option><option value="keep"${z.action==='keep'?' selected':''}>保留原状</option></select>
+    ${z.action==='adjust'?`<label>变化量<input type="number" min="0" max="6" step="0.1" value="${z.delta}" data-zone-delta="${i}"></label>
+    <select data-zone-direction="${i}"><option value="both"${z.direction==='both'?' selected':''}>各向同性</option><option value="horizontal"${z.direction==='horizontal'?' selected':''}>横向</option><option value="vertical"${z.direction==='vertical'?' selected':''}>竖向</option></select>`:''}</div>`).join('');
+  host.querySelectorAll('[data-zone-action]').forEach(el=>el.onchange=()=>{strokeState.zones[Number(el.dataset.zoneAction)].action=el.value;renderStrokeZoneEditor();});
+  host.querySelectorAll('[data-zone-delta]').forEach(el=>el.onchange=()=>{strokeState.zones[Number(el.dataset.zoneDelta)].delta=Number(el.value);});
+  host.querySelectorAll('[data-zone-direction]').forEach(el=>el.onchange=()=>{strokeState.zones[Number(el.dataset.zoneDirection)].direction=el.value;});
+}
+
 
 async function showStorage(){const info=await api('/audit/storage');modal('存储与清理',`<p class="help-text">当前文件 ${(info.total_bytes/1048576).toFixed(2)} MB。仅清理超过保留期且未被记录引用的文件；原始文件不在清理范围。</p><label>保留小时数<input id="storageAge" type="number" min="1" max="87600" value="24"></label><button id="previewCleanup">预览可清理文件</button><div id="cleanupList"></div><button id="confirmCleanup" disabled>清理选中文件</button><p id="cleanupResult" class="help-text"></p>`);let age=24;let files=[];$('previewCleanup').onclick=()=>busy('正在核对存储引用…',async()=>{age=Number($('storageAge').value);files=await api('/audit/orphans','POST',{minimum_age_hours:age});$('cleanupList').innerHTML=files.length?files.map((f,i)=>`<label><input type="checkbox" data-cleanup-index="${i}" checked>${escapeHtml(f.path)} · ${Math.ceil(f.bytes/1024)} KB</label>`).join(''):'<p>当前没有可清理文件。</p>';$('confirmCleanup').disabled=!files.length;$('cleanupResult').textContent='请确认文件清单；真实删除不可撤销。';});$('confirmCleanup').onclick=()=>busy('正在清理选中文件…',async()=>{const paths=[...document.querySelectorAll('[data-cleanup-index]:checked')].map(e=>files[Number(e.dataset.cleanupIndex)].path);const result=await api('/audit/cleanup','POST',{minimum_age_hours:age,paths});$('cleanupResult').textContent=`已清理 ${result.deleted.length} 个文件，释放 ${(result.bytes_freed/1048576).toFixed(2)} MB。`;$('confirmCleanup').disabled=true;});}

@@ -5,6 +5,7 @@ import re
 from collections import Counter
 
 from .core import choice, identity, now, number, require, string
+from .imaging import REVIEW_PAPER_HEX, parse_paper_color
 
 
 class Review:
@@ -19,6 +20,7 @@ class Review:
             'require_ocr': values.get('require_ocr', True),
             'require_review': values.get('require_review', False),
             'flag_stale': values.get('flag_stale', True),
+            'paper_background': values.get('paper_background', REVIEW_PAPER_HEX),
         }
 
     def configure(self, values):
@@ -31,6 +33,10 @@ class Review:
             if field in values:
                 require(isinstance(values[field], bool), field + '必须为布尔值')
                 current[field] = values[field]
+        if 'paper_background' in values:
+            # 审阅纸底只影响不透明输入（缩略图、OCR、铺底预览），绝不改写透明原件。
+            parse_paper_color(values['paper_background'], '审阅纸底颜色')
+            current['paper_background'] = '#' + values['paper_background'].lstrip('#').lower()
         with self.store.transaction() as state:
             state['review_settings'] = current
             self.store.event(state, '更新审核规则', 'workspace')

@@ -20,6 +20,15 @@ POST /documents
 
 上传：`POST /documents/{id}/import`，multipart `files` 可以重复；可选 form `position` 是从0开始的插入索引。返回 page_ids、failures、document。源文件完整保留，页面生成缩略图。
 
+透明语义：PNG/TIFF/WebP 的 alpha 通道在导入时完整保留（页面记录含 `has_alpha`），完全透明像素里隐藏的 RGB 一律清零，避免污染可见边缘。几何校正、旋转、缩放与模糊类处理走预乘 alpha，半透明颜色与覆盖程度（alpha）分别正确传播，不被当成普通不透明 RGB 混算；增强/二值化等只改颜色通道，覆盖程度原样保留。需要不透明输入的 OCR、缩略图与质量分析按“审阅纸底”临时铺底，绝不改写保存的透明原件。审阅纸底通过 `PATCH /review/settings` 的 `paper_background`（`#RRGGBB`，默认 `#ffffff`）配置。`GET /pages/{id}/preview?paper=RRGGBB` 返回一次性不透明铺底预览（不落盘），可在不同纸底上检查真实叠加；`GET /pages/{id}/image` 对带 alpha 的页面也支持同样的 `paper` 查询参数，不传则交付原始透明 PNG。
+
+```json
+POST /pages/{id}/process
+{"operation":"flatten","params":{"paper":"#ffffff"}}
+```
+
+`flatten` 是一次显式的“明确铺底”决定：按指定纸底把当前页合成为不透明图像，作为普通历史步骤保存，可随时经 `restore` 回到透明原件；不调用它时，透明原件始终不被铺底。
+
 ```json
 POST /pages/{id}/process
 {"operation":"illumination","params":{"strength":0.7},"revision":0}
@@ -60,7 +69,9 @@ POST /documents/{id}/export
 {"kind":"searchable_pdf","options":{"dpi":150}}
 ```
 
-kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导出顺序）、dpi、image_format、quality、include_originals。结果返回导出id，`GET /exports/{id}/download` 下载；`GET /exports/{id}/verify` 校验。可搜索PDF拒绝缺失或过期OCR。
+kind 为images/txt/pdf/searchable_pdf/zip；options 可传page_ids（指定导出顺序）、dpi、image_format、quality、include_originals、paper（铺底纸色 `#RRGGBB`，默认 `#ffffff`）。结果返回导出id，`GET /exports/{id}/download` 下载；`GET /exports/{id}/verify` 校验。可搜索PDF拒绝缺失或过期OCR。
+
+透明交付规则：图片 ZIP 选 png 时保留 alpha 与覆盖程度（透明交付）；选 jpeg 时按 options.paper 明确铺底；tiff 保留 alpha。pdf/searchable_pdf 的纸面不透明，带 alpha 的页面按 options.paper 铺底后入页，边缘与预览、缩略图使用同一套合成含义；导出记录回写 `paper_background`。完整归档 zip 原样携带透明 PNG 与全部历史，重新导入后透明决定完整恢复。
 
 ## 文档编排
 

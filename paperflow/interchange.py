@@ -180,7 +180,11 @@ def export_multipage_tiff(store, pages):
     try:
         for page in pages:
             with Image.open(store.resolve(page['current'])) as source:
-                images.append(source.convert('RGB').copy())
+                # 带 alpha 的页面保留 RGBA TIFF，覆盖程度不丢失；不透明页面仍写 RGB。
+                if 'A' in source.getbands():
+                    images.append(source.convert('RGBA').copy())
+                else:
+                    images.append(source.convert('RGB').copy())
         require(bool(images), '没有可导出页面')
         images[0].save(output, format='TIFF', save_all=True, append_images=images[1:], compression='tiff_lzw')
         return output.getvalue()

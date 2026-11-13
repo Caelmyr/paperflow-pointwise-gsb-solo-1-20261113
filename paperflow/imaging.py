@@ -14,14 +14,129 @@ from .core import DomainError, choice, number, require
 MAX_PIXELS = 36_000_000
 MIN_SIDE = 32
 MAX_SIDE = 16000
+# 明确的审阅纸底：需要不透明输入的识别、缩略图与铺底输出统一使用它。
+REVIEW_PAPER_HEX = 'ffffff'
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
 
 def validate_image(image):
+    require(image.ndim in (2, 3), '图像数据结构无效')
     height, width = image.shape[:2]
     require(MIN_SIDE <= width <= MAX_SIDE and MIN_SIDE <= height <= MAX_SIDE, '图片宽高必须在32–16000像素之间')
     require(width * height <= MAX_PIXELS, '图片最多3600万像素')
+    if image.ndim == 3:
+        require(image.shape[2] in (3, 4), '图像通道数无效')
     return image
+
+
+def has_alpha(image):
+    """只有真正存在半透明或透明像素的图像才携带 alpha 通道。"""
+    return image.ndim == 3 and image.shape[2] == 4
+
+
+def parse_paper_color(value, field='审阅纸底颜色'):
+    """把 #RRGGBB / RRGGBB 解析为不透明 BGR 三元组（cv2 约定）。"""
+    if value is None:
+        value = REVIEW_PAPER_HEX
+    require(isinstance(value, str), field + '必须为十六进制颜色文本')
+    text = value.strip().lstrip('#')
+    require(len(text) == 6, field + '必须为 #RRGGBB 六位十六进制颜色')
+    try:
+        red = int(text[0:2], 16)
+        green = int(text[2:4], 16)
+        blue = int(text[4:6], 16)
+    except ValueError:
+        require(False, field + '必须为 #RRGGBB 六位十六进制颜色')
+    return (blue, green, red)
+
+
+def sanitize_transparent(image):
+    """把完全透明像素里的隐藏颜色清为黑色，避免污染可见边缘。
+
+    透明原件中 alpha=0 的 RGB 没有物理含义；统一清零后，任何直接插值
+    （例如未走预乘路径的运算）都不会把隐藏颜色带到半透明边缘上。
+    """
+    if not has_alpha(image):
+        return image
+    result = image.copy()
+    transparent = result[:, :, 3] == 0
+    if transparent.any():
+        result[:, :, :3][transparent] = 0
+    return result
+
+
+def premultiplied(image):
+    """返回 (预乘BGRA float32, 原alpha uint8)，用于几何重采样。"""
+    alpha = image[:, :, 3].astype(np.float32) / 255.0
+    color = image[:, :, :3].astype(np.float32)
+    pre = color * alpha[:, :, None]
+    return np.dstack([pre, alpha * 255.0]), image[:, :, 3].copy()
+
+
+def unpremultiplied(pre):
+    """预乘 float32 BGRA -> 非预乘 uint8 BGRA；零 alpha 处 RGB 清零。"""
+    pre = np.clip(pre, 0, 255)
+    alpha = pre[:, :, 3:4]
+    coverage = np.divide(alpha, 255.0, out=np.zeros_like(alpha), where=alpha > 0)
+    color = np.divide(pre[:, :, :3], coverage, out=np.zeros_like(pre[:, :, :3]), where=coverage > 1e-6)
+    color = np.clip(np.rint(color), 0, 255).astype(np.uint8)
+    alpha_u8 = np.clip(np.rint(alpha[:, :, 0]), 0, 255).astype(np.uint8)
+    return sanitize_transparent(np.dstack([color, alpha_u8]))
+
+
+def warp_alpha(image, warp, size, flags, border_value=(255, 255, 255)):
+    """以预乘 alpha 执行任意透视/仿射变换，半透明边缘不混入透明区隐藏颜色。
+
+    warp 为接受 (BGRA float32, size, flags, borderValue) 的 cv2 变换函数。
+    不透明图像仍按原三通道路径处理，保持既有行为。
+    """
+    if not has_alpha(image):
+        return warp(image, size, flags, border_value)
+    pre, _ = premultiplied(image)
+    warped = warp(pre, size, flags, (0, 0, 0, 0))
+    return unpremultiplied(warped)
+
+
+def resize_alpha(image, size=None, fx=None, fy=None, interpolation=cv2.INTER_AREA):
+    """缩放时对颜色与覆盖程度使用同一套预乘含义。"""
+    if not has_alpha(image):
+        return cv2.resize(image, size, fx=fx, fy=fy, interpolation=interpolation)
+    pre, _ = premultiplied(image)
+    resized = cv2.resize(pre, size, fx=fx, fy=fy, interpolation=interpolation)
+    return unpremultiplied(resized)
+
+
+def flatten(image, paper=REVIEW_PAPER_HEX):
+    """按明确审阅纸底合成不透明 BGR；只用于审阅/铺底，绝不改写透明原件。"""
+    if isinstance(paper, str):
+        paper = parse_paper_color(paper)
+    if not has_alpha(image):
+        return bgr(image).copy()
+    alpha = image[:, :, 3].astype(np.float32) / 255.0
+    color = image[:, :, :3].astype(np.float32)
+    background = np.zeros_like(color)
+    background[:, :, :] = paper
+    composited = color * alpha[:, :, None] + background * (1 - alpha[:, :, None])
+    return np.clip(np.rint(composited), 0, 255).astype(np.uint8)
+
+
+def drop_opaque_alpha(image):
+    """完全不透明的四通道图像回落为三通道，减少不必要的 alpha 负担。"""
+    if has_alpha(image) and bool((image[:, :, 3] == 255).all()):
+        return image[:, :, :3].copy()
+    return image
+
+
+def pil_to_opencv(pil_image):
+    """PIL 图像 -> cv2 BGRA/BGR，保留真实 alpha，并清理透明像素的隐藏颜色。"""
+    normalized = ImageOps.exif_transpose(pil_image)
+    bands = normalized.getbands()
+    if 'A' in bands:
+        rgba = np.asarray(normalized.convert('RGBA'))
+        bgra = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)
+        return drop_opaque_alpha(sanitize_transparent(bgra))
+    rgb = np.asarray(normalized.convert('RGB'))
+    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
 
 def read_image(path):
@@ -31,13 +146,7 @@ def read_image(path):
             with Image.open(path) as original:
                 require(original.format in ('PNG', 'JPEG', 'TIFF', 'BMP', 'WEBP'), '不支持此图片格式')
                 require(original.width * original.height <= MAX_PIXELS, '图片像素过大')
-                normalized = ImageOps.exif_transpose(original)
-                if 'A' in normalized.getbands():
-                    background = Image.new('RGB', normalized.size, 'white')
-                    background.paste(normalized, mask=normalized.getchannel('A'))
-                    normalized = background
-                rgb = np.asarray(normalized.convert('RGB'))
-                result = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                result = pil_to_opencv(original)
                 return validate_image(result)
     except DomainError:
         raise
@@ -60,10 +169,12 @@ def save_image(path, image):
         temporary.unlink(missing_ok=True)
 
 
-def thumbnail(path, image, size=240):
+def thumbnail(path, image, size=240, paper=REVIEW_PAPER_HEX):
+    """缩略图是不透明审阅视图：按明确审阅纸底铺底，与铺底导出边缘一致。"""
     height, width = image.shape[:2]
     ratio = min(size / width, size / height, 1)
-    small = cv2.resize(image, None, fx=ratio, fy=ratio, interpolation=cv2.INTER_AREA)
+    small = resize_alpha(image, None, fx=ratio, fy=ratio, interpolation=cv2.INTER_AREA)
+    small = flatten(small, paper)
     success, encoded = cv2.imencode('.jpg', small, [cv2.IMWRITE_JPEG_QUALITY, 86])
     require(success, '缩略图生成失败', 500)
     Path(path).write_bytes(encoded.tobytes())
@@ -72,6 +183,8 @@ def thumbnail(path, image, size=240):
 def gray(image):
     if image.ndim == 2:
         return image
+    if has_alpha(image):
+        return cv2.cvtColor(flatten(image), cv2.COLOR_BGR2GRAY)
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
 
@@ -101,7 +214,7 @@ def ordered_quad(points):
 def detect_edges(image):
     height, width = image.shape[:2]
     ratio = min(1, 1200 / max(height, width))
-    small = cv2.resize(image, None, fx=ratio, fy=ratio, interpolation=cv2.INTER_AREA)
+    small = resize_alpha(image, None, fx=ratio, fy=ratio, interpolation=cv2.INTER_AREA)
     luminance = gray(small)
     blurred = cv2.GaussianBlur(luminance, (5, 5), 0)
     edges = cv2.Canny(blurred, 40, 120)
@@ -138,7 +251,11 @@ def perspective(image, points):
     require(min(target_width, target_height) >= MIN_SIDE, '校正区域过窄')
     target = np.array([[0, 0], [target_width - 1, 0], [target_width - 1, target_height - 1], [0, target_height - 1]], np.float32)
     matrix = cv2.getPerspectiveTransform(points, target)
-    result = cv2.warpPerspective(image, matrix, (target_width, target_height), borderValue=(255, 255, 255))
+
+    def warp(source, size, flags, border_value):
+        return cv2.warpPerspective(source, matrix, size, flags=flags, borderValue=border_value)
+
+    result = warp_alpha(image, warp, (target_width, target_height), cv2.INTER_LINEAR, (255, 255, 255))
     return result, {'points': points.tolist(), 'matrix': matrix.tolist()}
 
 
@@ -161,7 +278,11 @@ def rotate(image, angle, expand=True):
         matrix[0, 2] += (new_width - width) / 2
         matrix[1, 2] += (new_height - height) / 2
     require(new_width * new_height <= MAX_PIXELS, '旋转结果超过像素限制')
-    return cv2.warpAffine(image, matrix, (new_width, new_height), flags=cv2.INTER_CUBIC, borderValue=(255, 255, 255))
+
+    def warp(source, size, flags, border_value):
+        return cv2.warpAffine(source, matrix, size, flags=flags, borderValue=border_value)
+
+    return warp_alpha(image, warp, (new_width, new_height), cv2.INTER_CUBIC, (255, 255, 255))
 
 
 def skew_angle(image):
@@ -193,7 +314,13 @@ def illumination(image, strength):
     strength = number(strength, '光照强度', 0, 1)
     if strength == 0:
         return image.copy()
-    lab = cv2.cvtColor(bgr(image), cv2.COLOR_BGR2LAB)
+    if not has_alpha(image):
+        work = bgr(image)
+        alpha = None
+    else:
+        work = image[:, :, :3].copy()
+        alpha = image[:, :, 3].copy()
+    lab = cv2.cvtColor(work, cv2.COLOR_BGR2LAB)
     light, channel_a, channel_b = cv2.split(lab)
     scale = min(1, 1200 / max(light.shape))
     reduced = cv2.resize(light, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
@@ -204,6 +331,8 @@ def illumination(image, strength):
     corrected = cv2.divide(light, np.maximum(background, 1), scale=245)
     light = cv2.addWeighted(light, 1 - strength, corrected, strength, 0)
     result = cv2.cvtColor(cv2.merge((light, channel_a, channel_b)), cv2.COLOR_LAB2BGR)
+    if alpha is not None:
+        return sanitize_transparent(np.dstack([result, alpha]))
     return result
 
 
@@ -211,18 +340,30 @@ def color_mode(image, mode, threshold=160, block_size=35, constant=12):
     choice(mode, '色彩模式', ('color', 'gray', 'binary', 'adaptive'))
     if mode == 'color':
         return bgr(image)
-    luminance = gray(image)
+    if has_alpha(image):
+        alpha = image[:, :, 3].copy()
+        luminance = gray(image)
+    else:
+        alpha = None
+        luminance = gray(bgr(image))
     if mode == 'gray':
-        return bgr(luminance)
+        result = cv2.cvtColor(luminance, cv2.COLOR_GRAY2BGR)
+        if alpha is not None:
+            return sanitize_transparent(np.dstack([result, alpha]))
+        return result
     if mode == 'binary':
         threshold = number(threshold, '全局阈值', 0, 255, True)
-        result = cv2.threshold(luminance, threshold, 255, cv2.THRESH_BINARY)[1]
+        binary = cv2.threshold(luminance, threshold, 255, cv2.THRESH_BINARY)[1]
     else:
         block_size = number(block_size, '自适应窗口', 3, 201, True)
         require(block_size % 2 == 1, '自适应窗口必须为奇数')
         constant = number(constant, '自适应常量', -50, 50)
-        result = cv2.adaptiveThreshold(luminance, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, block_size, constant)
-    return bgr(result)
+        binary = cv2.adaptiveThreshold(luminance, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, block_size, constant)
+    result = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+    if alpha is not None:
+        # 二值化只决定可见颜色，覆盖程度（alpha）原样保留。
+        return sanitize_transparent(np.dstack([result, alpha]))
+    return result
 
 
 def rectangle(value, image):
@@ -256,13 +397,18 @@ def denoise(image, area=8, median=3, region=None):
             remove[labels == label] = 255
             removed += 1
     if removed:
-        work = cv2.inpaint(work, remove, 3, cv2.INPAINT_TELEA)
+        if has_alpha(work):
+            # 修复只作用于颜色通道；透明像素没有可修复的纸面颜色，alpha 保持不变。
+            repaired = cv2.inpaint(work[:, :, :3], remove, 3, cv2.INPAINT_TELEA)
+            work = np.dstack([repaired, work[:, :, 3]])
+        else:
+            work = cv2.inpaint(work, remove, 3, cv2.INPAINT_TELEA)
     result[y:y + h, x:x + w] = work
     return result, {'removed_components': removed, 'region': [x, y, w, h]}
 
 
 def quality(image):
-    luminance = gray(image)
+    luminance = gray(flatten(image) if has_alpha(image) else image)
     histogram = cv2.calcHist([luminance], [0], None, [256], [0, 256]).ravel()
     histogram /= max(1, histogram.sum())
     nonzero = histogram[histogram > 0]
@@ -276,6 +422,8 @@ def quality(image):
         'entropy': round(entropy, 3),
         'dark_ratio': round(float((luminance < 80).mean()), 4),
         'light_ratio': round(float((luminance > 230).mean()), 4),
+        'has_alpha': has_alpha(image),
+        'transparent_ratio': round(float((image[:, :, 3] == 0).mean()), 4) if has_alpha(image) else 0.0,
     }
 
 
@@ -308,6 +456,10 @@ def process(image, operation, params):
         result = illumination(image, params.get('strength', 0.6))
         result = color_mode(result, params.get('mode', 'adaptive'), params.get('threshold', 160), params.get('block_size', 35), params.get('constant', 12))
         result, metadata = denoise(result, params.get('area', 3), params.get('median', 1))
+    elif operation == 'flatten':
+        paper = parse_paper_color(params.get('paper', REVIEW_PAPER_HEX), '铺底纸色')
+        result = flatten(image, paper)
+        metadata = {'paper': params.get('paper', REVIEW_PAPER_HEX)}
     else:
         from .filters import apply_filter
         result, metadata = apply_filter(image, operation, params)

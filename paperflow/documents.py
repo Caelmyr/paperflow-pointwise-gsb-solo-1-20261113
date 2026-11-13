@@ -13,6 +13,7 @@ from PIL import Image, ImageOps
 
 from . import imaging, ocr
 from .core import DomainError, digest, identity, ids, now, number, require, string
+from .imaging import REVIEW_PAPER_HEX, has_alpha, parse_paper_color, pil_to_opencv
 
 MAX_FILE_BYTES = 60 * 1024 * 1024
 MAX_IMPORT_PAGES = 200
@@ -35,13 +36,23 @@ class Documents:
         document['pages'] = [state['pages'][page_id] for page_id in document['page_ids']]
         return document
 
+    def review_paper(self):
+        """明确审阅纸底：仅供缩略图、识别等不透明输入使用，不写回透明原件。"""
+        settings = self.store.snapshot().get('review_settings', {})
+        paper = settings.get('paper_background', REVIEW_PAPER_HEX)
+        try:
+            parse_paper_color(paper)
+        except DomainError:
+            paper = REVIEW_PAPER_HEX
+        return paper
+
     def add_image(self, document_id, image, name, source=None, position=None):
         imaging.validate_image(image)
         self.store.get('documents', document_id)
         original_path = self.store.new_file('originals')
         thumb_path = self.store.new_file('thumbs', '.jpg')
         imaging.save_image(original_path, image)
-        imaging.thumbnail(thumb_path, image)
+        imaging.thumbnail(thumb_path, image, paper=self.review_paper())
         page_id = identity('page')
         original = self.store.relative(original_path)
         record = {
@@ -55,6 +66,7 @@ class Documents:
             'sha256': digest(original_path),
             'width': image.shape[1],
             'height': image.shape[0],
+            'has_alpha': has_alpha(image),
             'revision': 0,
             'created_at': now(),
             'updated_at': now(),
@@ -144,8 +156,7 @@ class Documents:
                             break
                         tiff.seek(frame)
                         require(tiff.width * tiff.height <= imaging.MAX_PIXELS, 'TIFF 页面过大')
-                        rgb = np.asarray(ImageOps.exif_transpose(tiff).convert('RGB'))
-                        image = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                        image = pil_to_opencv(ImageOps.exif_transpose(tiff))
                         insertion = None if position is None else position + len(imported)
                         record = self.add_image(document_id, image, f'{Path(name).stem} · {frame + 1}', {'name': name, 'type': 'tiff', 'page': frame + 1}, insertion)
                         imported.append(record['id'])
@@ -171,7 +182,7 @@ class Documents:
             path = self.store.new_file('processed')
             thumb_path = self.store.new_file('thumbs', '.jpg')
             imaging.save_image(path, result)
-            imaging.thumbnail(thumb_path, result)
+            imaging.thumbnail(thumb_path, result, paper=self.review_paper())
             with self.store.transaction() as state:
                 current = state['pages'].get(page_id)
                 require(current is not None, '页面已被删除', 409)
@@ -191,6 +202,7 @@ class Documents:
                 current['thumbnail'] = self.store.relative(thumb_path)
                 current['width'] = result.shape[1]
                 current['height'] = result.shape[0]
+                current['has_alpha'] = has_alpha(result)
                 current['quality'] = imaging.quality(result)
                 current['revision'] += 1
                 current['updated_at'] = now()
@@ -210,7 +222,7 @@ class Documents:
                 target = page['original']
             image = imaging.read_image(self.store.resolve(target))
             thumb_path = self.store.new_file('thumbs', '.jpg')
-            imaging.thumbnail(thumb_path, image)
+            imaging.thumbnail(thumb_path, image, paper=self.review_paper())
             with self.store.transaction() as state:
                 current = state['pages'][page_id]
                 current['history'].append({
@@ -228,6 +240,7 @@ class Documents:
                 current['thumbnail'] = self.store.relative(thumb_path)
                 current['width'] = image.shape[1]
                 current['height'] = image.shape[0]
+                current['has_alpha'] = has_alpha(image)
                 current['quality'] = imaging.quality(image)
                 current['revision'] += 1
                 current['updated_at'] = now()
@@ -240,8 +253,12 @@ class Documents:
         with self.page_lock(page_id):
             page = self.store.get('pages', page_id)
             image = imaging.read_image(self.store.resolve(page['current']))
-            result = ocr.recognize(image, params.get('language', 'chi_sim+eng'), params.get('psm', 3), params.get('minimum', 0))
+            # 识别需要不透明输入：按明确审阅纸底临时铺底，不修改保存的透明原件。
+            paper = self.review_paper()
+            ocr_image = imaging.flatten(image, paper) if has_alpha(image) else image
+            result = ocr.recognize(ocr_image, params.get('language', 'chi_sim+eng'), params.get('psm', 3), params.get('minimum', 0))
             result['image_revision'] = page['revision']
+            result['recognition_paper'] = paper if has_alpha(image) else None
             with self.store.transaction() as state:
                 current = state['pages'].get(page_id)
                 require(current is not None and current['revision'] == page['revision'], 'OCR 期间页面发生变化', 409)
@@ -400,7 +417,8 @@ class Documents:
             image = imaging.read_image(self.store.resolve(page['current']))
             x, y, w, h = imaging.rectangle(values.get('region'), image)
             path = self.store.new_file('regions')
-            imaging.save_image(path, image[y:y + h, x:x + w])
+            region_image = image[y:y + h, x:x + w].copy()
+            imaging.save_image(path, region_image)
             record = {
                 'id': identity('region'),
                 'name': string(values.get('name', '提取区域'), '区域名称', 100),
@@ -408,6 +426,7 @@ class Documents:
                 'rect': [x, y, w, h],
                 'path': self.store.relative(path),
                 'image_revision': page['revision'],
+                'has_alpha': has_alpha(region_image),
                 'created_at': now(),
             }
             require(record['kind'] in ('illustration', 'text', 'other'), '区域类型无效')

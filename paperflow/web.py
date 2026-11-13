@@ -4,7 +4,8 @@ import logging
 import mimetypes
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_file, send_from_directory
+import cv2
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException
 
 from . import ocr
@@ -12,7 +13,7 @@ from .core import ROOT, DomainError, Store, choice, require, string
 from .demo import seed
 from .documents import Documents
 from .exports import Exporter
-from .imaging import detect_edges, read_image, skew_angle
+from .imaging import REVIEW_PAPER_HEX, detect_edges, flatten, parse_paper_color, read_image, skew_angle
 from .tasks import Scheduler
 
 
@@ -181,7 +182,32 @@ def create_app(data_root=None, demo=True):
     def page_image(identifier):
         page = store.get('pages', identifier)
         variant = choice(request.args.get('variant', 'current'), '图像版本', ('current', 'original', 'thumbnail'))
-        return send_file(store.resolve(page[variant]), conditional=True)
+        path = store.resolve(page[variant])
+        paper = request.args.get('paper')
+        # 只有非缩略图、且页面本身带透明通道时，纸底参数才会生成一次性铺底预览；
+        # 该预览不落盘、不改写保存的透明原件。
+        if variant != 'thumbnail' and paper and page.get('has_alpha'):
+            parse_paper_color(paper, '预览纸底颜色')
+            image = flatten(read_image(path), paper)
+            ok, encoded = cv2.imencode('.png', image)
+            require(ok, '预览编码失败', 500)
+            return Response(encoded.tobytes(), mimetype='image/png', headers={'Cache-Control': 'no-store'})
+        response = send_file(path, conditional=True)
+        if variant == 'thumbnail':
+            response.headers['Content-Type'] = 'image/jpeg'
+        return response
+
+    @app.get('/api/pages/<identifier>/preview')
+    def flatten_preview(identifier):
+        """明确纸底的不透明审阅预览（不保存），用于在不同纸底上检查真实叠加效果。"""
+        page = store.get('pages', identifier)
+        variant = choice(request.args.get('variant', 'current'), '图像版本', ('current', 'original'))
+        paper = request.args.get('paper', REVIEW_PAPER_HEX)
+        parse_paper_color(paper, '预览纸底颜色')
+        image = flatten(read_image(store.resolve(page[variant])), paper)
+        ok, encoded = cv2.imencode('.png', image)
+        require(ok, '预览编码失败', 500)
+        return Response(encoded.tobytes(), mimetype='image/png', headers={'Cache-Control': 'no-store', 'X-Paper': paper})
 
     @app.get('/api/pages/<identifier>/edges')
     def edges(identifier):

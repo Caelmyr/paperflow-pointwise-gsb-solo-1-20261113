@@ -7,17 +7,23 @@ import cv2
 import numpy as np
 
 from .core import choice, number, require
-from .imaging import gray
+from .imaging import flatten, gray, has_alpha, resize_alpha
+
+
+def opaque(image):
+    """分析需要不透明输入时，按审阅白纸临时铺底（不改写原件）。"""
+    return flatten(image) if has_alpha(image) else image
 
 
 def reduced(image, longest=1800):
     height, width = image.shape[:2]
     ratio = min(1, longest / max(height, width))
-    result = cv2.resize(image, None, fx=ratio, fy=ratio, interpolation=cv2.INTER_AREA)
+    result = resize_alpha(image, None, fx=ratio, fy=ratio, interpolation=cv2.INTER_AREA)
     return result, ratio
 
 
 def histogram(image):
+    image = opaque(image)
     result = {}
     for index, name in enumerate(('blue', 'green', 'red')):
         values = cv2.calcHist([image], [index], None, [256], [0, 256])
@@ -201,6 +207,8 @@ def hash_distance(first, second):
 
 
 def compare_images(first, second):
+    first = opaque(first)
+    second = opaque(second)
     target_width = min(first.shape[1], second.shape[1], 1200)
     target_height = min(first.shape[0], second.shape[0], 1600)
     first_gray = cv2.resize(gray(first), (target_width, target_height)).astype(np.float32)
@@ -227,6 +235,7 @@ def compare_images(first, second):
 
 
 def color_statistics(image):
+    image = opaque(image)
     pixels = image.reshape(-1, 3)
     means = np.mean(pixels, axis=0)
     deviations = np.std(pixels, axis=0)

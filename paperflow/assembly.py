@@ -4,7 +4,18 @@ import cv2
 import numpy as np
 
 from .core import choice, now, number, require, string
-from .imaging import read_image, validate_image
+from .imaging import flatten, has_alpha, read_image, resize_alpha, validate_image
+
+
+def composite_into(canvas, image, x, y):
+    """把页面按 alpha 合成到画布上；不透明页面走原直接赋值路径。"""
+    if not has_alpha(image):
+        canvas[y:y + image.shape[0], x:x + image.shape[1]] = image
+        return
+    region = canvas[y:y + image.shape[0], x:x + image.shape[1]]
+    alpha = image[:, :, 3:4].astype(np.float32) / 255.0
+    blended = image[:, :, :3].astype(np.float32) * alpha + region.astype(np.float32) * (1 - alpha)
+    canvas[y:y + image.shape[0], x:x + image.shape[1]] = np.clip(np.rint(blended), 0, 255).astype(np.uint8)
 
 
 class Assembly:
@@ -59,11 +70,14 @@ class Assembly:
         for index, page in enumerate(document['pages']):
             image = read_image(self.store.resolve(page['current']))
             ratio = min((cell_width - 24) / image.shape[1], (cell_height - 44) / image.shape[0])
-            resized = cv2.resize(image, None, fx=ratio, fy=ratio, interpolation=cv2.INTER_AREA)
+            resized = resize_alpha(image, None, fx=ratio, fy=ratio, interpolation=cv2.INTER_AREA)
             row, column = divmod(index, columns)
             x = column * cell_width + (cell_width - resized.shape[1]) // 2
             y = row * cell_height + 12
-            result[y:y + resized.shape[0], x:x + resized.shape[1]] = resized
+            if has_alpha(resized):
+                # 联系表是不透明审阅视图：透明页按明确白纸底合成，边缘与缩略图/铺底一致。
+                resized = flatten(resized)
+            composite_into(result, resized, x, y)
             cv2.putText(result, str(index + 1), (column * cell_width + 12, (row + 1) * cell_height - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (80, 100, 80), 1, cv2.LINE_AA)
         target_id = values.get('target_id', document_id)
         return self.documents.add_image(target_id, result, document['name'] + ' · 联系表', {'type': 'generated', 'kind': 'contact_sheet', 'document_id': document_id})
@@ -84,16 +98,21 @@ class Assembly:
             width = sum(image.shape[1] for image in images) + gap * (len(images) - 1)
             height = max(image.shape[0] for image in images)
         require(width * height <= 36_000_000 and max(width, height) <= 16000, '拼接结果过大')
-        result = np.full((height, width, 3), 255, np.uint8)
+        transparent = any(has_alpha(image) for image in images)
+        if transparent:
+            # 任一页带透明通道时，拼接画布保持透明：间距与留白不能凭空变成白纸。
+            result = np.zeros((height, width, 4), np.uint8)
+        else:
+            result = np.full((height, width, 3), 255, np.uint8)
         cursor = 0
         for image in images:
             if orientation == 'vertical':
                 x = (width - image.shape[1]) // 2
-                result[cursor:cursor + image.shape[0], x:x + image.shape[1]] = image
+                composite_into(result, image, x, cursor)
                 cursor += image.shape[0] + gap
             else:
                 y = (height - image.shape[0]) // 2
-                result[y:y + image.shape[0], cursor:cursor + image.shape[1]] = image
+                composite_into(result, image, cursor, y)
                 cursor += image.shape[1] + gap
         name = string(values.get('name', '拼接页面'), '页面名称', 200)
         return self.documents.add_image(target_id, result, name, {'type': 'generated', 'kind': 'concatenate', 'page_ids': page_ids})

@@ -56,6 +56,23 @@ class Enumeration(Parameter):
         return result
 
 
+class HexColor(Parameter):
+    def __init__(self, default=None, required=False):
+        super().__init__(default, required)
+
+    def validate(self, value, field):
+        from .imaging import parse_paper_color
+        if value is None:
+            return self.default
+        require(isinstance(value, str), field + '必须为十六进制颜色文本')
+        parse_paper_color(value, field)
+        return '#' + value.lstrip('#').lower()
+
+    def describe(self):
+        result = super().describe()
+        result['type'] = 'hex_color'
+        return result
+
 class Region(Parameter):
     def validate(self, value, field):
         if value is None and not self.required:
@@ -226,6 +243,9 @@ def build_registry():
         'minimum': Numeric(0, 100, 0),
     })
     registry['restore'] = Operation('恢复原图', 'history', {})
+    registry['flatten'] = Operation('明确铺底', 'history', {
+        'paper': HexColor('ffffff'),
+    })
     return registry
 
 
